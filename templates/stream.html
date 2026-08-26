@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-2">
+  <div>
+    <h1 class="text-2xl font-bold">Live Stream Simulation</h1>
+    <p class="text-gray-400 text-sm mt-1">Replaying dataset row-by-row — simulating real-time machine sensor feed</p>
+  </div>
+  <div class="flex items-center gap-3">
+    <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse inline-block"></span>
+    <span id="statusLabel" class="text-green-400 text-sm font-medium">LIVE</span>
+    <button onclick="toggleStream()"
+      id="toggleBtn"
+      class="ml-2 bg-gray-700 hover:bg-gray-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+      Pause
+    </button>
+  </div>
+</div>
+
+<!-- Progress bar -->
+<div class="flex items-center gap-3 mb-6">
+  <span class="text-gray-500 text-xs">Record</span>
+  <div class="flex-1 bg-gray-800 rounded-full h-1.5">
+    <div id="progressBar" class="h-1.5 rounded-full bg-blue-500 transition-all duration-500" style="width:0%"></div>
+  </div>
+  <span id="progressLabel" class="text-gray-400 text-xs font-mono">0 / —</span>
+</div>
+
+<!-- Current record cards -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Record ID</p>
+    <p class="text-3xl font-bold mt-1 font-mono text-gray-100" id="s_id">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Failure Probability</p>
+    <p class="text-3xl font-bold mt-1 text-blue-400" id="s_prob">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Risk Score</p>
+    <p class="text-3xl font-bold mt-1 text-orange-400" id="s_score">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5" id="s_levelCard">
+    <p class="text-gray-400 text-sm">Risk Level</p>
+    <p class="text-3xl font-bold mt-1" id="s_level">—</p>
+  </div>
+</div>
+
+<!-- Sensor readings -->
+<div class="grid grid-cols-3 gap-4 mb-6">
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Air Temp</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_air">—</span> <span class="text-gray-500 text-sm">K</span></p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Process Temp</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_proc">—</span> <span class="text-gray-500 text-sm">K</span></p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Rotational Speed</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_rpm">—</span> <span class="text-gray-500 text-sm">rpm</span></p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Torque</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_torque">—</span> <span class="text-gray-500 text-sm">Nm</span></p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Tool Wear</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_wear">—</span> <span class="text-gray-500 text-sm">min</span></p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <p class="text-gray-400 text-xs mb-1">Power</p>
+    <p class="text-xl font-bold text-gray-100"><span id="s_power">—</span> <span class="text-gray-500 text-sm">W</span></p>
+  </div>
+</div>
+
+<!-- Action + SHAP -->
+<div class="grid grid-cols-2 gap-6 mb-6">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-3">Recommended Action</h2>
+    <p class="text-gray-100 text-sm" id="s_action">—</p>
+    <div class="mt-3" id="s_badges"></div>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-1">SHAP Explanation</h2>
+    <p class="text-blue-300 text-sm mt-2" id="s_shap">—</p>
+  </div>
+</div>
+
+<!-- Rolling chart -->
+<div class="bg-gray-800 rounded-xl p-5">
+  <h2 class="font-semibold text-gray-200 mb-1">Risk Score — Rolling Feed</h2>
+  <p class="text-gray-500 text-xs mb-4">Last 20 records streamed</p>
+  <canvas id="streamChart" height="120"></canvas>
+</div>
+
+<script>
+const levelColor = {
+  Critical: 'text-red-400', High: 'text-orange-400',
+  Medium: 'text-yellow-400', Low: 'text-green-400'
+}
+
+let running   = true
+let intervalId = null
+let chart     = null
+const history  = { ids: [], scores: [], probs: [] }
+const MAX_HIST = 20
+
+function initChart() {
+  chart = new Chart(document.getElementById('streamChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Risk Score',
+          data: [],
+          borderColor: '#f97316',
+          backgroundColor: 'rgba(249,115,22,0.08)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#f97316',
+          fill: true,
+          tension: 0.3
+        },
+        {
+          label: 'Failure Prob %',
+          data: [],
+          borderColor: '#60a5fa',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          pointRadius: 2,
+          pointBackgroundColor: '#60a5fa',
+          tension: 0.3
+        }
+      ]
+    },
+    options: {
+      animation: { duration: 400 },
+      plugins: { legend: { labels: { color: '#d1d5db' } } },
+      scales: {
+        x: { ticks: { color: '#6b7280', maxTicksLimit: 8 }, grid: { color: '#374151' } },
+        y: { ticks: { color: '#6b7280' }, grid: { color: '#374151' }, min: 0, max: 100 }
+      }
+    }
+  })
+}
+
+function updateChart(id, score, prob) {
+  history.ids.push('#' + id)
+  history.scores.push(score)
+  history.probs.push(parseFloat((prob * 100).toFixed(1)))
+
+  if (history.ids.length > MAX_HIST) {
+    history.ids.shift(); history.scores.shift(); history.probs.shift()
+  }
+
+  chart.data.labels             = history.ids
+  chart.data.datasets[0].data  = history.scores
+  chart.data.datasets[1].data  = history.probs
+  chart.update()
+}
+
+function flashCard(id) {
+  const el = document.getElementById(id)
+  el.classList.add('opacity-50')
+  setTimeout(() => el.classList.remove('opacity-50'), 300)
+}
+
+async function fetchNext() {
+  const res  = await fetch('/api/stream')
+  const data = await res.json()
+  if (data.error) return
+
+  // Progress
+  const pct = ((data.stream_index + 1) / data.total_records * 100).toFixed(1)
+  document.getElementById('progressBar').style.width   = pct + '%'
+  document.getElementById('progressLabel').textContent =
+    `${data.stream_index + 1} / ${data.total_records}`
+
+  // Cards
+  ;['s_id','s_prob','s_score','s_level'].forEach(flashCard)
+  document.getElementById('s_id').textContent    = '#' + data.record_id
+  document.getElementById('s_prob').textContent  = (data.pred_prob * 100).toFixed(1) + '%'
+  document.getElementById('s_score').textContent = data.risk_score + '/100'
+
+  const lc = levelColor[data.risk_level] || 'text-gray-300'
+  document.getElementById('s_level').className   = 'text-3xl font-bold mt-1 ' + lc
+  document.getElementById('s_level').textContent = data.risk_level
+
+  // Alert flash for Critical
+  if (data.risk_level === 'Critical') {
+    document.getElementById('s_levelCard').classList.add('border', 'border-red-600')
+    setTimeout(() => document.getElementById('s_levelCard').classList.remove('border','border-red-600'), 2000)
+  }
+
+  // Sensor readings
+  document.getElementById('s_air').textContent    = data.air_temp?.toFixed(1) ?? '—'
+  document.getElementById('s_proc').textContent   = data.process_temp?.toFixed(2) ?? '—'
+  document.getElementById('s_rpm').textContent    = data.rpm ?? '—'
+  document.getElementById('s_torque').textContent = data.torque?.toFixed(2) ?? '—'
+  document.getElementById('s_wear').textContent   = data.tool_wear ?? '—'
+  document.getElementById('s_power').textContent  = data.power?.toFixed(1) ?? '—'
+
+  // Action + badges
+  document.getElementById('s_action').textContent = data.action || '—'
+  document.getElementById('s_shap').textContent   = data.shap_explanation || '—'
+
+  const flagMap = [
+    { key: 'hdf_risk', label: 'HDF', cls: 'bg-red-900 text-red-300 border border-red-700' },
+    { key: 'pwf_risk', label: 'PWF', cls: 'bg-orange-900 text-orange-300 border border-orange-700' },
+    { key: 'osf_risk', label: 'OSF', cls: 'bg-purple-900 text-purple-300 border border-purple-700' },
+  ]
+  const found = flagMap.filter(f => data[f.key] === 1)
+  document.getElementById('s_badges').innerHTML = found.length
+    ? found.map(f => `<span class="text-xs font-semibold px-2 py-1 rounded-full mr-1 ${f.cls}">${f.label}</span>`).join('')
+    : '<span class="text-gray-600 text-xs">No failure flags</span>'
+
+  // Chart
+  updateChart(data.record_id, data.risk_score, data.pred_prob)
+}
+
+function toggleStream() {
+  running = !running
+  const dot   = document.getElementById('statusDot')
+  const label = document.getElementById('statusLabel')
+  const btn   = document.getElementById('toggleBtn')
+
+  if (running) {
+    intervalId = setInterval(fetchNext, 3000)
+    dot.className   = 'w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse inline-block'
+    label.className = 'text-green-400 text-sm font-medium'
+    label.textContent = 'LIVE'
+    btn.textContent = 'Pause'
+  } else {
+    clearInterval(intervalId)
+    dot.className   = 'w-2.5 h-2.5 rounded-full bg-gray-500 inline-block'
+    label.className = 'text-gray-400 text-sm font-medium'
+    label.textContent = 'PAUSED'
+    btn.textContent = 'Resume'
+  }
+}
+
+// Init
+initChart()
+fetchNext()
+intervalId = setInterval(fetchNext, 3000)
+</script>
+{% endblock %}

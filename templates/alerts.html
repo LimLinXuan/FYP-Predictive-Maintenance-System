@@ -1,0 +1,333 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex justify-between items-center mb-2">
+  <h1 class="text-2xl font-bold">Alert Management</h1>
+  <a href="/api/export/csv"
+     class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+    ⬇ Export High-Risk CSV
+  </a>
+</div>
+<p class="text-gray-400 text-sm mb-6">High and Critical risk records requiring technician action.</p>
+
+<!-- Status filter bar -->
+<div class="flex gap-2 mb-5">
+  <button onclick="filterStatus('ALL')"            class="filter-btn active" id="btn-ALL">All</button>
+  <button onclick="filterStatus('OPEN')"           class="filter-btn" id="btn-OPEN">Open</button>
+  <button onclick="filterStatus('ASSIGNED')" class="filter-btn" id="btn-ASSIGNED">Assigned</button>
+  <button onclick="filterStatus('IN_PROGRESS')"   class="filter-btn" id="btn-IN_PROGRESS">In Progress</button>
+  <button onclick="filterStatus('RESOLVED')"      class="filter-btn" id="btn-RESOLVED">Resolved</button>
+  <button onclick="filterStatus('FALSE_POSITIVE')" class="filter-btn" id="btn-FALSE_POSITIVE">False Positive</button>
+</div>
+
+{% if current_user.role == 'technician' %}
+<div class="flex gap-2 mb-5">
+  <button onclick="filterOwner('MINE')" class="filter-btn active" id="btn-owner-MINE">My Alerts</button>
+  <button onclick="filterOwner('ALL')" class="filter-btn" id="btn-owner-ALL">All Alerts</button>
+</div>
+{% endif %}
+
+<div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="text-left py-2 pr-4">ID</th>
+        <th class="text-left py-2 pr-4">Risk</th>
+        <th class="text-left py-2 pr-4">Score</th>
+        <th class="text-left py-2 pr-4">Probability</th>
+        <th class="text-left py-2 pr-4">Confidence</th>
+        <th class="text-left py-2 pr-4">SHAP Explanation</th>
+        <th class="text-left py-2 pr-4">Reasons</th>
+        <th class="text-left py-2 pr-4">Status</th>
+        <th class="text-left py-2 pr-4">Assignee</th>
+        <th class="text-left py-2">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="alertTable"></tbody>
+  </table>
+  <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No alerts match this filter.</p>
+</div>
+
+<style>
+  .filter-btn {
+    padding: 4px 14px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    background: #374151;
+    color: #d1d5db;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+  }
+  .filter-btn:hover { background: #4b5563; }
+  .filter-btn.active { background: #2563eb; color: white; border-color: #3b82f6; }
+</style>
+
+<script>
+const levelColor  = { Critical:'text-red-400', High:'text-orange-400', Medium:'text-yellow-400', Low:'text-green-400' }
+const statusColor = {
+  OPEN:           'text-red-400',
+  ASSIGNED:       'text-blue-400',
+  IN_PROGRESS:    'text-yellow-400',
+  RESOLVED:       'text-green-400',
+  FALSE_POSITIVE: 'text-gray-400'
+}
+
+function confPct(prob)  { return (Math.abs(prob - 0.5) * 200).toFixed(0) + '%' }
+function confLabel(prob) {
+  const s = Math.abs(prob - 0.5) * 2
+  if (s >= 0.8) return 'Very High'
+  if (s >= 0.6) return 'High'
+  if (s >= 0.4) return 'Medium'
+  return 'Low'
+}
+function confClass(prob) {
+  const s = Math.abs(prob - 0.5) * 2
+  if (s >= 0.8) return 'text-green-400 text-xs font-semibold'
+  if (s >= 0.6) return 'text-blue-400 text-xs font-semibold'
+  if (s >= 0.4) return 'text-yellow-400 text-xs font-semibold'
+  return 'text-gray-400 text-xs font-semibold'
+}
+
+const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
+
+let allAlerts = []
+let ownerFilter = 'MINE'   // only relevant for technician
+let statusFilterVal = 'ALL'
+let technicianList = []
+
+async function load() {
+  allAlerts = await fetch('/api/alerts').then(r => r.json())
+  if (CURRENT_USER.role === 'admin') {
+    technicianList = await fetch('/api/technicians').then(r => r.json())
+  }
+  applyFilters()
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('alertTable')
+  const empty = document.getElementById('emptyMsg')
+  tbody.innerHTML = ''
+
+  if (data.length === 0) {
+    empty.classList.remove('hidden')
+    return
+  }
+  empty.classList.add('hidden')
+
+  data.forEach(row => {
+    const sc = statusColor[row.alert_status] || 'text-gray-300'
+    const lc = levelColor[row.risk_level]    || 'text-gray-300'
+    const actionButtons = buildActionButtons(row)
+    const assigneeCell = buildAssigneeCell(row)
+
+    const tr = document.createElement('tr')
+    tr.className = 'border-b border-gray-700 hover:bg-gray-750 transition-colors'
+    tr.id = `row-${row.record_id}`
+    tr.innerHTML = `
+      <td class="py-3 pr-4 font-mono">
+        <a href="/record/${row.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline">#${row.record_id}</a>
+      </td>
+      <td class="py-3 pr-4 font-bold ${lc}">${row.risk_level}</td>
+      <td class="py-3 pr-4">
+        <div class="flex items-center gap-2">
+          <div class="w-16 bg-gray-700 rounded-full h-1.5">
+            <div class="h-1.5 rounded-full ${scoreBarColor(row.risk_score)}" style="width:${row.risk_score}%"></div>
+          </div>
+          <span>${row.risk_score}/100</span>
+        </div>
+      </td>
+      <td class="py-3 pr-4">${(row.pred_prob * 100).toFixed(1)}%</td>
+      <td class="py-3 pr-4 text-xs text-blue-300 max-w-xs">${row.shap_explanation}</td>
+      <td class="py-3 pr-4 text-xs text-gray-400 max-w-xs">${row.reasons}</td>
+      <td class="py-3 pr-4">
+        <span class="${confClass(row.pred_prob)}">${confLabel(row.pred_prob)}</span>
+        <span class="text-gray-500 text-xs ml-1">${confPct(row.pred_prob)}</span>
+      </td>
+      <td class="py-3 pr-4" id="status-${row.record_id}">
+        <span class="${sc} font-semibold text-xs">${row.alert_status.replace('_',' ')}</span>
+      </td>
+      <td class="py-3 pr-4" id="assignee-${row.record_id}">
+        ${assigneeCell}
+      </td>
+      <td class="py-3" id="actions-${row.record_id}">
+        ${actionButtons}
+      </td>
+    `
+    tbody.appendChild(tr)
+  })
+}
+
+function scoreBarColor(score) {
+  if (score >= 85) return 'bg-red-500'
+  if (score >= 65) return 'bg-orange-500'
+  if (score >= 35) return 'bg-yellow-500'
+  return 'bg-green-500'
+}
+
+function buildAssigneeCell(row) {
+  if (row.assigned_to) {
+    const mine = row.assigned_to === CURRENT_USER.username
+    return `<span class="text-xs ${mine ? 'text-blue-300 font-semibold' : 'text-gray-300'}">${row.assigned_to}${mine ? ' (you)' : ''}</span>`
+  }
+  return '<span class="text-gray-600 text-xs">Unassigned</span>'
+}
+
+function buildActionButtons(row) {
+  const s = row.alert_status
+  const id = row.record_id
+  const isAdmin = CURRENT_USER.role === 'admin'
+  const isMine = row.assigned_to === CURRENT_USER.username
+  const closed = (s === 'RESOLVED' || s === 'FALSE_POSITIVE')
+
+  let html = '<div class="flex gap-1 flex-wrap">'
+
+  // ── Admin: assign / reassign dropdown ──
+  if (isAdmin && !closed) {
+    const options = technicianList.map(t =>
+      `<option value="${t}" ${t === row.assigned_to ? 'selected' : ''}>${t}</option>`
+    ).join('')
+    html += `
+      <select id="assignSelect-${id}" class="bg-gray-700 text-white text-xs rounded px-1 py-1">
+        <option value="">-- assign --</option>
+        ${options}
+      </select>
+      <button onclick="assignAlert(${id})"
+        class="bg-blue-700 hover:bg-blue-600 text-white text-xs px-2 py-1 rounded">
+        Assign
+      </button>`
+  }
+
+  // ── Technician: claim button if unassigned ──
+  if (!isAdmin && !row.assigned_to && s === 'OPEN') {
+    html += `
+      <button onclick="claimAlert(${id})"
+        class="bg-purple-700 hover:bg-purple-600 text-white text-xs px-2 py-1 rounded">
+        Claim
+      </button>`
+  }
+
+  // ── Status update buttons: admin always, technician only if assigned to them ──
+  if (!closed && (isAdmin || isMine)) {
+    if (s === 'ASSIGNED' || s === 'OPEN') {
+      html += `<button onclick="updateStatus(${id},'IN_PROGRESS')"
+        class="bg-yellow-700 hover:bg-yellow-600 text-white text-xs px-2 py-1 rounded">In Progress</button>`
+    }
+    if (s === 'ASSIGNED' || s === 'IN_PROGRESS' || s === 'OPEN') {
+      html += `
+        <button onclick="updateStatus(${id},'RESOLVED')"
+          class="bg-green-700 hover:bg-green-600 text-white text-xs px-2 py-1 rounded">Resolve</button>
+        <button onclick="updateStatus(${id},'FALSE_POSITIVE')"
+          class="bg-gray-600 hover:bg-gray-500 text-white text-xs px-2 py-1 rounded">False Positive</button>`
+    }
+  }
+
+  html += '</div>'
+  if (html === '<div class="flex gap-1 flex-wrap"></div>') {
+    return '<span class="text-gray-600 text-xs">—</span>'
+  }
+  return html
+}
+
+async function assignAlert(id) {
+  const select = document.getElementById(`assignSelect-${id}`)
+  const technician = select.value
+  if (!technician) { alert('Please select a technician.'); return }
+
+  const res = await fetch(`/api/assign/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ technician })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    applyAssignmentUpdate(id, data.assigned_to, data.alert_status)
+    showToast(`✅ Record #${id} assigned to ${data.assigned_to}`, 'info')
+  } else {
+    alert('Assign failed: ' + data.error)
+  }
+}
+
+async function claimAlert(id) {
+  const res = await fetch(`/api/assign/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  const data = await res.json()
+  if (res.ok) {
+    applyAssignmentUpdate(id, data.assigned_to, data.alert_status)
+    showToast(`✅ You claimed record #${id}`, 'info')
+  } else {
+    alert('Claim failed: ' + data.error)
+  }
+}
+
+function applyAssignmentUpdate(id, assignedTo, status) {
+  const record = allAlerts.find(r => r.record_id === id)
+  if (record) {
+    record.assigned_to = assignedTo
+    record.alert_status = status
+  }
+  const sc = statusColor[status] || 'text-gray-300'
+  document.getElementById(`status-${id}`).innerHTML =
+    `<span class="${sc} font-semibold text-xs">${status.replace('_',' ')}</span>`
+  document.getElementById(`assignee-${id}`).innerHTML = buildAssigneeCell(record)
+  document.getElementById(`actions-${id}`).innerHTML = buildActionButtons(record)
+}
+
+async function updateStatus(id, status) {
+  const res = await fetch(`/api/update_status/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    const record = allAlerts.find(r => r.record_id === id)
+    const level = record ? record.risk_level.toLowerCase() : 'info'
+    if (record) record.alert_status = status
+
+    const sc = statusColor[status] || 'text-gray-300'
+    document.getElementById(`status-${id}`).innerHTML =
+      `<span class="${sc} font-semibold text-xs">${status.replace('_',' ')}</span>`
+    document.getElementById(`actions-${id}`).innerHTML = buildActionButtons(record)
+
+    showToast(`✅ Record #${id} (${record ? record.risk_level : ''}) marked as ${status.replace('_',' ')}`, level)
+  } else {
+    alert('Update failed: ' + data.error)
+  }
+}
+
+function filterStatus(status) {
+  statusFilterVal = status
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    if (b.id.startsWith('btn-owner-')) return
+    b.classList.remove('active')
+  })
+  document.getElementById(`btn-${status}`).classList.add('active')
+  applyFilters()
+}
+
+function filterOwner(owner) {
+  ownerFilter = owner
+  document.getElementById('btn-owner-MINE').classList.remove('active')
+  document.getElementById('btn-owner-ALL').classList.remove('active')
+  document.getElementById(`btn-owner-${owner}`).classList.add('active')
+  applyFilters()
+}
+
+function applyFilters() {
+  let data = allAlerts
+  if (statusFilterVal !== 'ALL') {
+    data = data.filter(r => r.alert_status === statusFilterVal)
+  }
+  if (CURRENT_USER.role === 'technician' && ownerFilter === 'MINE') {
+    data = data.filter(r => r.assigned_to === CURRENT_USER.username)
+  }
+  renderTable(data)
+}
+
+load()
+</script>
+{% endblock %}

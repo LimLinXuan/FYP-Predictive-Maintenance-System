@@ -1,0 +1,8 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.idea/
+.ipynb_checkpoints/
+.env
+machine_monitor.db

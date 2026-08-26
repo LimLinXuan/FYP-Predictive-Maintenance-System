@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-2">
+  <h1 class="text-2xl font-bold">System Health</h1>
+  <button onclick="loadHealth()" class="text-blue-400 hover:text-blue-300 text-sm">↻ Refresh now</button>
+</div>
+<p class="text-gray-400 text-sm mb-6">API / Database / Model / System resource status — auto-refreshes every 10s</p>
+
+<!-- Overall status banner -->
+<div id="overallBanner" class="rounded-xl p-5 mb-8 border grid grid-cols-4 items-center gap-4">
+  <div class="col-span-2">
+    <p class="text-sm uppercase tracking-wide" id="overallLabel">Checking…</p>
+    <p class="text-3xl font-bold mt-1" id="overallStatus">—</p>
+    <p class="text-xs text-gray-400 mt-2" id="checkedAt"></p>
+  </div>
+  <div>
+    <p class="text-xs uppercase tracking-wide text-gray-400">Health Score</p>
+    <p class="text-2xl font-bold mt-1" id="healthScore">—</p>
+  </div>
+  <div>
+    <p class="text-xs uppercase tracking-wide text-gray-400">Uptime</p>
+    <p class="text-2xl font-bold mt-1" id="uptime">—</p>
+  </div>
+</div>
+
+<!-- Status cards -->
+<div class="grid grid-cols-4 gap-4 mb-8">
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-gray-400 text-sm">API</p>
+      <span id="api_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
+    </div>
+    <p class="text-xl font-bold" id="api_status">—</p>
+    <p class="text-gray-500 text-xs mt-2">Latency: <span id="api_latency">—</span> ms</p>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-gray-400 text-sm">Database</p>
+      <span id="db_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
+    </div>
+    <p class="text-xl font-bold" id="db_status">—</p>
+    <p class="text-gray-500 text-xs mt-2">Latency: <span id="db_latency">—</span> ms</p>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-gray-400 text-sm">Model</p>
+      <span id="model_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
+    </div>
+    <p class="text-xl font-bold" id="model_status">—</p>
+    <p class="text-gray-500 text-xs mt-2">Rows match: <span id="model_rowmatch">—</span></p>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-2">
+      <p class="text-gray-400 text-sm">System</p>
+      <span id="sys_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
+    </div>
+    <p class="text-xl font-bold" id="sys_status">—</p>
+    <p class="text-gray-500 text-xs mt-2">CPU <span id="sys_cpu">—</span>% · RAM <span id="sys_ram">—</span>%</p>
+  </div>
+
+</div>
+
+<!-- Health Timeline -->
+<div class="bg-gray-800 rounded-xl p-5 mb-8">
+  <div class="flex justify-between items-center mb-1">
+    <h2 class="font-semibold text-gray-200">Health Timeline</h2>
+    <p class="text-xs text-gray-500">Last 30 checks</p>
+  </div>
+  <p class="text-gray-500 text-xs mb-4">Each dot is one real health check performed by this system</p>
+  <div id="timeline" class="flex flex-wrap gap-1.5"></div>
+</div>
+
+<!-- Detail panels -->
+<div class="grid grid-cols-3 gap-6 mb-8">
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold mb-4 text-gray-200">Model</h2>
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-gray-700">
+        <tr><td class="py-2 text-gray-400">Version</td><td class="py-2 text-right" id="d_model_version">—</td></tr>
+        <tr><td class="py-2 text-gray-400">Metrics file exists</td><td class="py-2 text-right" id="d_metrics_exists">—</td></tr>
+        <tr><td class="py-2 text-gray-400">Metrics last updated</td><td class="py-2 text-right" id="d_metrics_updated">—</td></tr>
+        <tr><td class="py-2 text-gray-400">predictions rows</td><td class="py-2 text-right" id="d_pred_rows">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold mb-4 text-gray-200">Database</h2>
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-gray-700">
+        <tr><td class="py-2 text-gray-400">Engine</td><td class="py-2 text-right" id="d_db_engine">—</td></tr>
+        <tr><td class="py-2 text-gray-400">decision_log rows</td><td class="py-2 text-right" id="d_dl_rows">—</td></tr>
+        <tr><td class="py-2 text-gray-400">Last record update</td><td class="py-2 text-right" id="d_db_updated">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold mb-4 text-gray-200">Health Checks</h2>
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-gray-700">
+        <tr><td class="py-2 text-gray-400">Successful</td><td class="py-2 text-right text-green-400" id="d_checks_ok">—</td></tr>
+        <tr><td class="py-2 text-gray-400">Failed</td><td class="py-2 text-right text-red-400" id="d_checks_fail">—</td></tr>
+        <tr><td class="py-2 text-gray-400">Total logged</td><td class="py-2 text-right" id="d_checks_total">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- Last Incident -->
+<div id="incidentCard" class="rounded-xl p-5 mb-8 border">
+  <h2 class="font-semibold mb-3" id="incidentTitle">Last Incident</h2>
+  <div id="incidentBody"></div>
+</div>
+
+<script>
+const statusDot = { healthy: 'bg-green-500', degraded: 'bg-yellow-500', down: 'bg-red-500' }
+const statusText = { healthy: 'text-green-400', degraded: 'text-yellow-400', down: 'text-red-400' }
+const bannerStyle = {
+  healthy:  { border: 'border-green-800',  bg: 'bg-green-950',  label: 'text-green-300',  text: 'text-green-400' },
+  degraded: { border: 'border-yellow-800', bg: 'bg-yellow-950', label: 'text-yellow-300', text: 'text-yellow-400' },
+  down:     { border: 'border-red-800',    bg: 'bg-red-950',    label: 'text-red-300',    text: 'text-red-400' },
+}
+
+function setCard(prefix, status) {
+  document.getElementById(`${prefix}_dot`).className = `w-2.5 h-2.5 rounded-full ${statusDot[status] || 'bg-gray-600'}`
+  const el = document.getElementById(`${prefix}_status`)
+  el.textContent = (status || 'unknown').toUpperCase()
+  el.className = `text-xl font-bold ${statusText[status] || 'text-gray-400'}`
+}
+
+async function loadHealth() {
+  try {
+    const h = await fetch('/api/health').then(r => r.json())
+
+    const b = bannerStyle[h.overall_status] || bannerStyle.down
+    const banner = document.getElementById('overallBanner')
+    banner.className = `rounded-xl p-5 mb-8 border grid grid-cols-4 items-center gap-4 ${b.border} ${b.bg}`
+    document.getElementById('overallLabel').className = `text-sm uppercase tracking-wide ${b.label}`
+    document.getElementById('overallLabel').textContent = 'Overall Status'
+    document.getElementById('overallStatus').className = `text-3xl font-bold mt-1 ${b.text}`
+    document.getElementById('overallStatus').textContent = h.overall_status.toUpperCase()
+    document.getElementById('checkedAt').textContent = `Last checked: ${h.checked_at} UTC`
+    document.getElementById('healthScore').textContent = h.health_score + ' / 100'
+    document.getElementById('uptime').textContent = h.uptime
+
+    setCard('api', h.api.status)
+    document.getElementById('api_latency').textContent = h.api.latency_ms
+
+    setCard('db', h.database.status)
+    document.getElementById('db_latency').textContent = h.database.latency_ms ?? '—'
+
+    setCard('model', h.model.status)
+    document.getElementById('model_rowmatch').textContent = h.model.row_count_match === null ? '—' : (h.model.row_count_match ? 'Yes' : 'No')
+    document.getElementById('d_model_version').textContent = h.model_version
+    document.getElementById('d_metrics_exists').textContent = h.model.metrics_file_exists ? 'Yes' : 'No'
+    document.getElementById('d_metrics_updated').textContent = h.model.metrics_last_updated || '—'
+    document.getElementById('d_pred_rows').textContent = h.model.predictions_rows ?? '—'
+
+    setCard('sys', h.system.status)
+    document.getElementById('sys_cpu').textContent = h.system.cpu_percent ?? '—'
+    document.getElementById('sys_ram').textContent = h.system.ram_percent ?? '—'
+
+    document.getElementById('d_db_engine').textContent = h.database.engine
+    document.getElementById('d_dl_rows').textContent = h.database.record_count ?? '—'
+    document.getElementById('d_db_updated').textContent = h.database.last_updated || '—'
+
+    document.getElementById('d_checks_ok').textContent = h.checks.successful
+    document.getElementById('d_checks_fail').textContent = h.checks.failed
+    document.getElementById('d_checks_total').textContent = h.checks.total
+
+    // Timeline
+    const hist = await fetch('/api/health/history').then(r => r.json())
+    const timeline = document.getElementById('timeline')
+    timeline.innerHTML = ''
+    hist.forEach(entry => {
+      const dot = document.createElement('div')
+      dot.className = `w-4 h-4 rounded-sm ${statusDot[entry.overall_status] || 'bg-gray-600'}`
+      dot.title = `${entry.timestamp} — ${entry.overall_status.toUpperCase()} (${entry.api_latency_ms} ms)`
+      timeline.appendChild(dot)
+    })
+
+    // Last incident
+    const inc = h.last_incident
+    const incCard = document.getElementById('incidentCard')
+    const incTitle = document.getElementById('incidentTitle')
+    const incBody = document.getElementById('incidentBody')
+
+    if (!inc.has_incident) {
+      incCard.className = 'rounded-xl p-5 mb-8 border border-gray-700 bg-gray-800'
+      incTitle.className = 'font-semibold mb-3 text-gray-200'
+      incBody.innerHTML = `<p class="text-green-400 font-bold text-lg">None</p><p class="text-gray-500 text-xs mt-1">No incidents recorded since this session started</p>`
+    } else if (inc.recovered) {
+      incCard.className = 'rounded-xl p-5 mb-8 border border-gray-700 bg-gray-800'
+      incTitle.className = 'font-semibold mb-3 text-gray-200'
+      incBody.innerHTML = `
+        <p class="text-gray-200 font-bold text-lg">${inc.timestamp} UTC</p>
+        <p class="text-yellow-400 text-sm mt-1">${inc.status.toUpperCase()}</p>
+        <p class="text-green-400 text-xs mt-2">✓ Recovered</p>
+      `
+    } else {
+      incCard.className = 'rounded-xl p-5 mb-8 border border-red-800 bg-red-950'
+      incTitle.className = 'font-semibold mb-3 text-red-200'
+      incBody.innerHTML = `
+        <p class="text-red-200 font-bold text-lg">${inc.timestamp} UTC</p>
+        <p class="text-red-400 text-sm mt-1">${inc.status.toUpperCase()}</p>
+        <p class="text-red-300 text-xs mt-2">⚠ Ongoing — not yet recovered</p>
+      `
+    }
+
+  } catch (err) {
+    console.error('Health check failed:', err)
+    showToast('⚠ Failed to load system health', 'high')
+  }
+}
+
+loadHealth()
+setInterval(loadHealth, 10000)
+</script>
+{% endblock %}

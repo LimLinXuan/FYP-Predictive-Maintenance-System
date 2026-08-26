@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex justify-between items-center mb-2">
+  <h1 class="text-2xl font-bold">All Records</h1>
+</div>
+<p class="text-gray-400 text-sm mb-6">Browse records across all risk levels (Low / Medium / High / Critical).</p>
+
+<!-- Filters -->
+<div class="flex gap-3 mb-5 items-center flex-wrap">
+  <input type="text" id="searchBox" placeholder="Search ID, risk, status, action, reasons..."
+    oninput="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-1.5 w-64 placeholder-gray-500">
+
+  <div class="flex gap-2">
+    <button onclick="setLevel('ALL')"      class="filter-btn active" id="lvl-ALL">All Risk</button>
+    <button onclick="setLevel('Low')"      class="filter-btn" id="lvl-Low">Low</button>
+    <button onclick="setLevel('Medium')"   class="filter-btn" id="lvl-Medium">Medium</button>
+    <button onclick="setLevel('High')"     class="filter-btn" id="lvl-High">High</button>
+    <button onclick="setLevel('Critical')"     class="filter-btn" id="lvl-Critical">Critical</button>
+  </div>
+
+  <select id="statusFilter" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="ALL">All Status</option>
+    <option value="OPEN">Open</option>
+    <option value="IN_PROGRESS">In Progress</option>
+    <option value="RESOLVED">Resolved</option>
+    <option value="FALSE_POSITIVE">False Positive</option>
+  </select>
+
+  <select id="failureFilter" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="ALL">All Failure Types</option>
+    <option value="HDF">HDF — Heat Dissipation</option>
+    <option value="PWF">PWF — Power Failure</option>
+    <option value="OSF">OSF — Overstrain</option>
+    <option value="NONE">No Failure Flag</option>
+  </select>
+
+  <div class="flex items-center gap-1.5">
+  <label class="text-gray-400 text-xs">From</label>
+  <input type="date" id="dateFrom" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-2 py-1.5 [color-scheme:dark]">
+
+  <label class="text-gray-400 text-xs">To</label>
+  <input type="date" id="dateTo" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-2 py-1.5 [color-scheme:dark]">
+
+  <button onclick="clearDateRange()"
+    class="text-gray-400 hover:text-white text-sm font-bold px-1.5 transition-colors" title="Clear date range">✕</button>
+  </div>
+
+  <select id="limitSelect" onchange="loadRecords()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="50">50 records</option>
+    <option value="100">100 records</option>
+    <option value="200">200 records</option>
+  </select>
+
+  <a href="/api/export/csv"
+    class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-1.5 rounded-lg transition-colors ml-auto">
+    ⬇ Export CSV
+  </a>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="text-left py-2 pr-4">ID</th>
+        <th class="text-left py-2 pr-4">Risk</th>
+        <th class="text-left py-2 pr-4">Score</th>
+        <th class="text-left py-2 pr-4">Probability</th>
+        <th class="text-left py-2 pr-4">Confidence</th>
+        <!-- 變更處 2: 表頭改為 Machine State -->
+        <th class="text-left py-2 pr-4">Machine State</th>
+        <th class="text-left py-2">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="recordTable"></tbody>
+  </table>
+  <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No records match this filter.</p>
+</div>
+
+<style>
+  .filter-btn {
+    padding: 4px 14px; border-radius: 9999px; font-size: 0.75rem;
+    background: #374151; color: #d1d5db; cursor: pointer;
+    border: 1px solid transparent; transition: all 0.15s;
+  }
+  .filter-btn:hover { background: #4b5563; }
+  .filter-btn.active { background: #2563eb; color: white; border-color: #3b82f6; }
+</style>
+
+<script>
+const levelColor  = { Critical:'text-red-400', High:'text-orange-400', Medium:'text-yellow-400', Low:'text-green-400' }
+const statusColor = {
+  OPEN:'text-red-400', IN_PROGRESS:'text-yellow-400',
+  RESOLVED:'text-green-400', FALSE_POSITIVE:'text-gray-400'
+}
+const statusOrder = ['OPEN','IN_PROGRESS','RESOLVED','FALSE_POSITIVE']
+
+function machineState(row) {
+  if (row.alert_status === 'OK') {
+    if (row.risk_level === 'Low')    return { text: 'Healthy',    cls: 'text-green-400' }
+    if (row.risk_level === 'Medium') return { text: 'Monitoring', cls: 'text-yellow-400' }
+    return { text: 'OK', cls: 'text-blue-400' }
+  }
+  return { text: row.alert_status.replace('_',' '), cls: statusColor[row.alert_status] || 'text-gray-300' }
+}
+
+function confPct(prob)  { return (Math.abs(prob - 0.5) * 200).toFixed(0) + '%' }
+function confLabel(prob) {
+  const s = Math.abs(prob - 0.5) * 2
+  if (s >= 0.8) return 'Very High'
+  if (s >= 0.6) return 'High'
+  if (s >= 0.4) return 'Medium'
+  return 'Low'
+}
+function confClass(prob) {
+  const s = Math.abs(prob - 0.5) * 2
+  if (s >= 0.8) return 'text-green-400 text-xs font-semibold'
+  if (s >= 0.6) return 'text-blue-400 text-xs font-semibold'
+  if (s >= 0.4) return 'text-yellow-400 text-xs font-semibold'
+  return 'text-gray-400 text-xs font-semibold'
+}
+function scoreBarColor(score) {
+  if (score >= 85) return 'bg-red-500'
+  if (score >= 65) return 'bg-orange-500'
+  if (score >= 35) return 'bg-yellow-500'
+  return 'bg-green-500'
+}
+
+let currentLevel = 'ALL'
+let currentData  = []
+
+async function loadRecords() {
+  const limit = document.getElementById('limitSelect').value
+  const url = currentLevel === 'ALL'
+    ? `/api/records?limit=${limit}`
+    : `/api/records?limit=${limit}&level=${currentLevel}`
+  currentData = await fetch(url).then(r => r.json())
+  applyFilters()
+}
+
+function getFailureLabel(r) {
+  const labels = []
+  if (r.hdf_risk) labels.push('hdf', 'heat dissipation')
+  if (r.pwf_risk) labels.push('pwf', 'power failure')
+  if (r.osf_risk) labels.push('osf', 'overstrain')
+  if (!r.hdf_risk && !r.pwf_risk && !r.osf_risk) labels.push('none', 'no failure')
+  return labels.join(' ')
+}
+
+function applyFilters() {
+  const search = document.getElementById('searchBox').value.trim().toLowerCase()
+  const status = document.getElementById('statusFilter').value
+  const failure = document.getElementById('failureFilter').value
+  const dateFrom = document.getElementById('dateFrom').value
+  const dateTo = document.getElementById('dateTo').value
+
+  let filtered = currentData
+
+  if (search) {
+    filtered = filtered.filter(r => {
+      const haystack = [
+        String(r.record_id),
+        r.risk_level,
+        r.alert_status,
+        r.action,
+        r.reasons,
+        r.shap_explanation,
+        getFailureLabel(r)
+      ].filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(search)
+    })
+  }
+
+  if (status !== 'ALL') {
+    filtered = filtered.filter(r => r.alert_status === status)
+  }
+
+  if (failure !== 'ALL') {
+    if (failure === 'NONE') {
+      filtered = filtered.filter(r => !r.hdf_risk && !r.pwf_risk && !r.osf_risk)
+    } else {
+      const key = failure.toLowerCase() + '_risk'
+      filtered = filtered.filter(r => r[key] === 1)
+    }
+  }
+
+  if (dateFrom) {
+    filtered = filtered.filter(r => r.timestamp && r.timestamp.slice(0, 10) >= dateFrom)
+  }
+  if (dateTo) {
+    filtered = filtered.filter(r => r.timestamp && r.timestamp.slice(0, 10) <= dateTo)
+  }
+
+  renderTable(filtered)
+}
+
+function clearDateRange() {
+  document.getElementById('dateFrom').value = ''
+  document.getElementById('dateTo').value = ''
+  applyFilters()
+}
+
+function setLevel(level) {
+  document.querySelectorAll('#lvl-ALL,#lvl-Low,#lvl-Medium,#lvl-High,#lvl-Critical')
+    .forEach(b => b.classList.remove('active'))
+  document.getElementById(`lvl-${level}`).classList.add('active')
+  currentLevel = level
+  loadRecords()
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('recordTable')
+  const empty = document.getElementById('emptyMsg')
+  tbody.innerHTML = ''
+
+  if (!data || data.length === 0) {
+    empty.classList.remove('hidden')
+    return
+  }
+  empty.classList.add('hidden')
+
+  data.forEach(row => {
+    const sc = statusColor[row.alert_status] || 'text-gray-300'
+    const lc = levelColor[row.risk_level]    || 'text-gray-300'
+
+    const tr = document.createElement('tr')
+    tr.className = 'border-b border-gray-700 hover:bg-gray-750 transition-colors'
+    tr.id = `row-${row.record_id}`
+    tr.innerHTML = `
+      <td class="py-3 pr-4 font-mono">
+        <a href="/record/${row.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline">#${row.record_id}</a>
+      </td>
+      <td class="py-3 pr-4 font-bold ${lc}">${row.risk_level}</td>
+      <td class="py-3 pr-4">
+        <div class="flex items-center gap-2">
+          <div class="w-16 bg-gray-700 rounded-full h-1.5">
+            <div class="h-1.5 rounded-full ${scoreBarColor(row.risk_score)}" style="width:${row.risk_score}%"></div>
+          </div>
+          <span>${row.risk_score}/100</span>
+        </div>
+      </td>
+      <td class="py-3 pr-4">${(row.pred_prob * 100).toFixed(1)}%</td>
+      <td class="py-3 pr-4">
+        <span class="${confClass(row.pred_prob)}">${confLabel(row.pred_prob)}</span>
+        <span class="text-gray-500 text-xs ml-1">${confPct(row.pred_prob)}</span>
+      </td>
+      <!-- 變更處 3: 修改表格單元格以呈現 Machine State -->
+      <td class="py-3 pr-4" id="status-${row.record_id}">
+        <span class="${machineState(row).cls} font-semibold text-xs">${machineState(row).text}</span>
+      </td>
+      <td class="py-3" id="actions-${row.record_id}">
+        ${buildActionButtons(row)}
+      </td>
+    `
+    tbody.appendChild(tr)
+  })
+}
+
+function buildActionButtons(row) {
+  const id = row.record_id
+
+  if (row.risk_level === 'Low' || row.risk_level === 'Medium') {
+    return `
+      <a href="/record/${id}"
+        class="inline-block bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-3 py-1 rounded transition-colors">
+        View Details
+      </a>`
+  }
+
+  const next = statusOrder.filter(s => s !== row.alert_status)
+  const btnStyle = {
+    OK:'bg-blue-700 hover:bg-blue-600',
+    OPEN:'bg-gray-600 hover:bg-gray-500',
+    IN_PROGRESS:'bg-yellow-700 hover:bg-yellow-600',
+    RESOLVED:'bg-green-700 hover:bg-green-600',
+    FALSE_POSITIVE:'bg-gray-600 hover:bg-gray-500'
+  }
+  return `<div class="flex gap-1 flex-wrap">` +
+    next.filter(s => s !== 'OK').map(s => `
+      <button onclick="updateStatus(${id},'${s}')"
+        class="${btnStyle[s]} text-white text-xs px-2 py-1 rounded transition-colors">
+        ${s.replace('_',' ')}
+      </button>`).join('') +
+    `</div>`
+}
+
+async function updateStatus(id, status) {
+  const res = await fetch(`/api/update_status/${id}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ status })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    const record = currentData.find(r => r.record_id === id)
+    const level  = record ? record.risk_level.toLowerCase() : 'info'
+    if (record) record.alert_status = status
+
+    // 變更處 4: 同步更新動態變更狀態時的渲染邏輯
+    const stateObj = machineState({ risk_level: record ? record.risk_level : '', alert_status: status })
+    document.getElementById(`status-${id}`).innerHTML =
+      `<span class="${stateObj.cls} font-semibold text-xs">${stateObj.text}</span>`
+    document.getElementById(`actions-${id}`).innerHTML =
+      buildActionButtons({ record_id: id, alert_status: status })
+
+    showToast(`Record #${id} (${record ? record.risk_level : ''}) marked as ${status.replace('_',' ')}`, level)
+  } else {
+    alert('Update failed: ' + data.error)
+  }
+}
+
+loadRecords()
+</script>
+{% endblock %}

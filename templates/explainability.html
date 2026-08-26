@@ -1,0 +1,521 @@
+{% extends "base.html" %}
+{% block title %}Explainability{% endblock %}
+
+{% block content %}
+<div class="expl-wrap">
+
+  <div class="expl-header">
+    <h1>Model Explainability</h1>
+    <p class="expl-sub">ROC curve and confusion matrix &mdash; why this model can be trusted.
+      For why a single prediction came out the way it did, see the SHAP explanations below.</p>
+  </div>
+
+  <!-- Model + threshold controls -->
+  <div class="expl-controls card">
+    <div class="control-group">
+      <label>Model</label>
+      <div class="model-toggle">
+        <button class="model-btn active" data-model="rf">Random Forest</button>
+        <button class="model-btn" data-model="lr">Logistic Regression</button>
+      </div>
+    </div>
+    <div class="control-group threshold-group">
+      <label>Failure Decision Threshold: <span id="thresholdValue">0.50</span></label>
+      <input type="range" id="thresholdSlider" min="0" max="1" step="0.01" value="0.5">
+      <div class="threshold-hint">Records with predicted probability &ge; threshold are flagged as failure.</div>
+    </div>
+  </div>
+
+  <div id="loadingState" class="card loading-state">Loading model evaluation data&hellip;</div>
+
+  <div id="expl-body" style="display:none;">
+
+    <div class="expl-grid">
+
+      <!-- ROC Curve -->
+      <div class="card chart-card">
+        <div class="card-title">
+          ROC Curve <span class="auc-badge" id="aucBadge" title="AUC measures the model's ability to distinguish between normal and failure cases. 1.0 = perfect separation, 0.5 = random guessing.">AUC = &mdash;</span>
+        </div>
+        <canvas id="rocChart" height="300"></canvas>
+      </div>
+
+      <!-- Confusion Matrix -->
+      <div class="card cm-card">
+        <div class="card-title">Confusion Matrix</div>
+        <table class="cm-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Predicted Normal</th>
+              <th>Predicted Failure</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Actual Normal</th>
+              <td class="cm-cell cm-tn" id="cm_tn" title="0% of all records">0</td>
+              <td class="cm-cell cm-fp" id="cm_fp" title="0% of all records">0</td>
+            </tr>
+            <tr>
+              <th>Actual Failure</th>
+              <td class="cm-cell cm-fn" id="cm_fn" title="0% of all records">0</td>
+              <td class="cm-cell cm-tp" id="cm_tp" title="0% of all records">0</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="cm-legend">
+          <span><i class="dot dot-tp"></i> TP &mdash; correctly caught failures</span>
+          <span><i class="dot dot-tn"></i> TN &mdash; correctly left alone</span>
+          <span><i class="dot dot-fp"></i> FP &mdash; false alarm (unnecessary maintenance)</span>
+          <span><i class="dot dot-fn"></i> FN &mdash; missed failure (costliest error)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics row -->
+    <div class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">Accuracy</div>
+        <div class="metric-value" id="metricAccuracy">&mdash;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Precision</div>
+        <div class="metric-value" id="metricPrecision">&mdash;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Recall</div>
+        <div class="metric-value" id="metricRecall">&mdash;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">F1-score</div>
+        <div class="metric-value" id="metricF1">&mdash;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">ROC-AUC</div>
+        <div class="metric-value" id="metricAUC">&mdash;</div>
+      </div>
+      <div class="metric-card highlight-warn">
+        <div class="metric-label">Missed failures (FN)</div>
+        <div class="metric-value" id="metricFN">&mdash;</div>
+      </div>
+    </div>
+
+    <!-- SHAP section: Dynamic Importance + Dynamic Force Plot + Static Summary PNG -->
+    <div class="card shap-card">
+      <div class="card-title">
+        Prediction Explanation (SHAP)
+        <span class="auc-badge" style="background:#ecfdf5;color:#059669;">Selected Production Model: Random Forest</span>
+      </div>
+      <p class="expl-sub" style="margin-top:-4px;">Why the model made a specific prediction on a specific record.
+        SHAP explanations below are computed for Random Forest &mdash; the model used in the live risk engine.
+        The LR/RF toggle above is for model evaluation only.</p>
+      <div class="shap-grid">
+        <div class="shap-item">
+          <img src="{{ url_for('static', filename='shap_summary.png') }}" alt="SHAP summary">
+          <div class="shap-caption">Feature impact across all records</div>
+        </div>
+        <div class="shap-item shap-item-chart">
+          <div class="shap-chart-box">
+            <canvas id="shapImportanceChart"></canvas>
+          </div>
+          <div class="shap-caption">Average feature importance <span id="shapImportanceMeta"></span></div>
+        </div>
+        <div class="shap-item shap-item-chart">
+          <div class="shap-chart-box">
+            <canvas id="forcePlotChart"></canvas>
+          </div>
+          <div class="shap-caption">Single prediction breakdown <span id="forcePlotMeta"></span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+  .expl-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  .expl-header h1 { margin: 0 0 4px; font-size: 24px; }
+  .expl-sub { color: #6b7280; font-size: 14px; margin: 0 0 20px; }
+
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+          padding: 18px 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+
+  .expl-controls { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;
+                    margin-bottom: 20px; }
+  .control-group label { display: block; font-size: 13px; font-weight: 600;
+                          color: #374151; margin-bottom: 8px; }
+  .model-toggle { display: flex; gap: 8px; }
+  .model-btn { padding: 8px 16px; border: 1px solid #d1d5db; background: #f9fafb;
+               border-radius: 6px; cursor: pointer; font-size: 13px; color: #374151; }
+  .model-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+  .threshold-group { flex: 1; min-width: 260px; }
+  .threshold-group input[type=range] { width: 100%; accent-color: #2563eb; }
+  .threshold-hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+  #thresholdValue { color: #2563eb; font-weight: 700; }
+
+  .loading-state { text-align: center; color: #9ca3af; padding: 60px 0; }
+
+  .expl-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 20px; margin-bottom: 20px; }
+  @media (max-width: 860px) { .expl-grid { grid-template-columns: 1fr; } }
+
+  .card-title { font-size: 15px; font-weight: 700; color: #111827; margin-bottom: 14px;
+                display: flex; align-items: center; gap: 10px; }
+  .auc-badge { background: #eff6ff; color: #2563eb; font-size: 12px; font-weight: 600;
+               padding: 3px 9px; border-radius: 999px; }
+
+  .cm-table { width: 100%; border-collapse: collapse; text-align: center; }
+  .cm-table th { font-size: 12px; color: #6b7280; font-weight: 600; padding: 8px 6px; }
+  .cm-table th:first-child { text-align: left; }
+  .cm-cell { font-size: 26px; font-weight: 700; padding: 18px 8px; border-radius: 8px; }
+  .cm-tn { background: #ecfdf5; color: #059669; }
+  .cm-tp { background: #ecfdf5; color: #059669; }
+  .cm-fp { background: #fffbeb; color: #d97706; }
+  .cm-fn { background: #fef2f2; color: #dc2626; }
+  .cm-legend { margin-top: 14px; display: flex; flex-direction: column; gap: 5px;
+               font-size: 12px; color: #6b7280; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-tp, .dot-tn { background: #059669; }
+  .dot-fp { background: #d97706; }
+  .dot-fn { background: #dc2626; }
+
+  .metrics-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .metrics-row { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 560px) { .metrics-row { grid-template-columns: repeat(2, 1fr); } }
+  .metric-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+                 padding: 14px; text-align: center; }
+  .metric-card.highlight-warn { background: #fef2f2; border-color: #fecaca; }
+  .metric-label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  .metric-value { font-size: 20px; font-weight: 700; color: #111827; }
+  .highlight-warn .metric-value { color: #dc2626; }
+
+  .shap-card { margin-top: 4px; }
+  .shap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 14px; }
+  @media (max-width: 760px) { .shap-grid { grid-template-columns: 1fr; } }
+  .shap-item img { width: 100%; border-radius: 6px; border: 1px solid #e5e7eb; }
+  .shap-caption { font-size: 12px; color: #6b7280; text-align: center; margin-top: 6px; }
+
+  .shap-item-chart { background: #fff; border-radius: 6px; border: 1px solid #e5e7eb; padding: 12px 8px 8px; }
+  .shap-chart-box { position: relative; height: 300px; width: 100%; }
+  .shap-chart-box canvas { width: 100% !important; height: 100% !important; }
+  #shapImportanceMeta, #forcePlotMeta { color: #9ca3af; font-weight: 400; }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+  let data = null;
+  let currentModel = 'rf';
+  let rocChart = null;
+  let shapImportanceChart = null;
+  let forcePlotChart = null;
+
+  function computeConfusion(actual, probs, threshold) {
+    let tp = 0, tn = 0, fp = 0, fn = 0;
+    for (let i = 0; i < actual.length; i++) {
+      const predicted = probs[i] >= threshold ? 1 : 0;
+      if (actual[i] === 1 && predicted === 1) tp++;
+      else if (actual[i] === 0 && predicted === 0) tn++;
+      else if (actual[i] === 0 && predicted === 1) fp++;
+      else fn++;
+    }
+    return { tp, tn, fp, fn };
+  }
+
+  function metricsFromConfusion(c) {
+    const total = c.tp + c.tn + c.fp + c.fn;
+    const precision = (c.tp + c.fp) > 0 ? c.tp / (c.tp + c.fp) : 0;
+    const recall = (c.tp + c.fn) > 0 ? c.tp / (c.tp + c.fn) : 0;
+    const f1 = (precision + recall) > 0 ? 2 * precision * recall / (precision + recall) : 0;
+    const accuracy = total > 0 ? (c.tp + c.tn) / total : 0;
+    return { precision, recall, f1, accuracy };
+  }
+
+  function nearestRocPoint(model, threshold) {
+    const thresholds = data[model].thresholds;
+    let bestIdx = 0, bestDiff = Infinity;
+    for (let i = 0; i < thresholds.length; i++) {
+      const diff = Math.abs(thresholds[i] - threshold);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    return { fpr: data[model].fpr[bestIdx], tpr: data[model].tpr[bestIdx] };
+  }
+
+  function loadShapImportance() {
+    fetch('/api/shap/global')
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.error) throw new Error(json.error);
+
+        const sorted = [...json.features].sort((a, b) => b.importance - a.importance).slice(0, 20);
+        const labels = sorted.map((f) => f.feature);
+        const values = sorted.map((f) => f.importance);
+
+        document.getElementById('shapImportanceMeta').textContent =
+          '· ' + json.model + ', trained ' + new Date(json.trained_at).toLocaleDateString();
+
+        const ctx = document.getElementById('shapImportanceChart').getContext('2d');
+        if (shapImportanceChart) {
+          shapImportanceChart.data.labels = labels;
+          shapImportanceChart.data.datasets[0].data = values;
+          shapImportanceChart.update();
+          return;
+        }
+
+        shapImportanceChart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Mean |SHAP value|',
+              data: values,
+              backgroundColor: '#2563eb',
+              borderRadius: 3,
+            }],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => 'Mean |SHAP|: ' + ctx.raw.toFixed(4),
+                },
+              },
+            },
+            scales: {
+              x: {
+                title: { display: true, text: 'mean(|SHAP value|)', color: '#4b5563' },
+                ticks: { color: '#4b5563' },
+                grid: { color: '#f3f4f6' }
+              },
+              y: {
+                ticks: { font: { size: 10 }, color: '#1f2937' },
+                grid: { display: false }
+              },
+            },
+          },
+        });
+      })
+      .catch((err) => {
+        document.getElementById('shapImportanceMeta').textContent =
+          '· could not load (' + err.message + ')';
+      });
+  }
+
+  function loadForcePlot() {
+    fetch('/api/shap/highest-risk')
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.error) throw new Error(json.error);
+
+        const top = json.features.slice(0, 15);
+        const labels = top.map((f) => f.feature);
+        const values = top.map((f) => f.shap_value);
+        const colors = values.map((v) => v >= 0 ? '#dc2626' : '#2563eb');
+
+        document.getElementById('forcePlotMeta').textContent =
+          '· Record #' + json.record_id + ', ' + json.risk_level + ' (' +
+          (json.pred_prob * 100).toFixed(1) + '%)';
+
+        const ctx = document.getElementById('forcePlotChart').getContext('2d');
+        if (forcePlotChart) {
+          forcePlotChart.data.labels = labels;
+          forcePlotChart.data.datasets[0].data = values;
+          forcePlotChart.data.datasets[0].backgroundColor = colors;
+          forcePlotChart.update();
+          return;
+        }
+
+        forcePlotChart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'SHAP value',
+              data: values,
+              backgroundColor: colors,
+              borderRadius: 3,
+            }],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const dir = ctx.raw >= 0 ? 'pushes toward failure' : 'pushes toward normal';
+                    return 'SHAP: ' + ctx.raw.toFixed(4) + ' (' + dir + ')';
+                  },
+                },
+              },
+            },
+            scales: {
+              x: {
+                title: { display: true, text: 'SHAP value (impact on model output)', color: '#4b5563' },
+                ticks: { color: '#4b5563' },
+                grid: { color: '#f3f4f6' }
+              },
+              y: {
+                ticks: { font: { size: 10 }, color: '#1f2937' },
+                grid: { display: false }
+              },
+            },
+          },
+        });
+      })
+      .catch((err) => {
+        document.getElementById('forcePlotMeta').textContent =
+          '· could not load (' + err.message + ')';
+      });
+  }
+
+  function render() {
+    const threshold = parseFloat(document.getElementById('thresholdSlider').value);
+    document.getElementById('thresholdValue').textContent = threshold.toFixed(2);
+
+    const model = data[currentModel];
+    const c = computeConfusion(data.actual, model.probs, threshold);
+    const m = metricsFromConfusion(c);
+
+    const total = c.tp + c.tn + c.fp + c.fn;
+    const pct = (n) => total > 0 ? (n / total * 100).toFixed(1) + '% of all records' : '0% of all records';
+
+    document.getElementById('cm_tp').textContent = c.tp;
+    document.getElementById('cm_tn').textContent = c.tn;
+    document.getElementById('cm_fp').textContent = c.fp;
+    document.getElementById('cm_fn').textContent = c.fn;
+    document.getElementById('cm_tp').title = pct(c.tp);
+    document.getElementById('cm_tn').title = pct(c.tn);
+    document.getElementById('cm_fp').title = pct(c.fp);
+    document.getElementById('cm_fn').title = pct(c.fn);
+
+    document.getElementById('metricAccuracy').textContent = (m.accuracy * 100).toFixed(1) + '%';
+    document.getElementById('metricPrecision').textContent = (m.precision * 100).toFixed(1) + '%';
+    document.getElementById('metricRecall').textContent = (m.recall * 100).toFixed(1) + '%';
+    document.getElementById('metricF1').textContent = (m.f1 * 100).toFixed(1) + '%';
+    document.getElementById('metricAUC').textContent = model.auc.toFixed(3);
+    document.getElementById('metricFN').textContent = c.fn;
+
+    document.getElementById('aucBadge').textContent = 'AUC = ' + model.auc.toFixed(3);
+
+    const point = nearestRocPoint(currentModel, threshold);
+    const modelName = currentModel === 'rf' ? 'Random Forest' : 'Logistic Regression';
+    rocChart.data.datasets[2].data = [{ x: point.fpr, y: point.tpr, threshold: threshold }];
+    rocChart.data.datasets[2].label = 'Current threshold (' + threshold.toFixed(2) + ')';
+    rocChart.data.datasets[0].label = modelName + ' (AUC=' + model.auc.toFixed(3) + ')';
+    rocChart.data.datasets[0].data = model.fpr.map((x, i) => ({ x, y: model.tpr[i] }));
+    rocChart.update();
+  }
+
+  function buildChart() {
+    const ctx = document.getElementById('rocChart').getContext('2d');
+    rocChart = new Chart(ctx, {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'ROC curve',
+            data: [],
+            showLine: true,
+            borderColor: '#2563eb',
+            backgroundColor: 'transparent',
+            pointRadius: 0,
+            borderWidth: 2,
+            tension: 0,
+          },
+          {
+            label: 'Random guess',
+            data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+            showLine: true,
+            borderColor: '#d1d5db',
+            borderDash: [6, 6],
+            backgroundColor: 'transparent',
+            pointRadius: 0,
+            borderWidth: 1,
+          },
+          {
+            label: 'Current threshold',
+            data: [],
+            showLine: false,
+            pointRadius: 7,
+            pointBackgroundColor: '#dc2626',
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        scales: {
+          x: { min: 0, max: 1, title: { display: true, text: 'False Positive Rate' } },
+          y: { min: 0, max: 1, title: { display: true, text: 'True Positive Rate' } },
+        },
+        plugins: {
+          legend: {
+            labels: {
+              filter: (item) => item.text !== 'Random guess',
+            },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (ctx) {
+                if (ctx.datasetIndex === 2) {
+                  const p = ctx.raw;
+                  return 'Threshold ' + p.threshold.toFixed(2)
+                    + '  |  TPR ' + p.y.toFixed(3)
+                    + '  |  FPR ' + p.x.toFixed(3);
+                }
+                return 'FPR ' + ctx.parsed.x.toFixed(3) + ', TPR ' + ctx.parsed.y.toFixed(3);
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  function init() {
+    fetch('/api/explainability')
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.error) throw new Error(json.error);
+        data = json;
+        document.getElementById('loadingState').style.display = 'none';
+        document.getElementById('expl-body').style.display = 'block';
+        buildChart();
+        render();
+      })
+      .catch((err) => {
+        document.getElementById('loadingState').textContent =
+          'Could not load explainability data: ' + err.message;
+      });
+
+    loadShapImportance();
+    loadForcePlot();
+
+    document.getElementById('thresholdSlider').addEventListener('input', render);
+
+    document.querySelectorAll('.model-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.model-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentModel = btn.dataset.model;
+        render();
+      });
+    });
+  }
+
+  init();
+})();
+</script>
+{% endblock %}

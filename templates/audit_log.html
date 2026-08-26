@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-xl font-bold text-blue-400 mb-6">Audit log</h1>
+
+<!-- Filters -->
+<form method="GET" class="flex items-center gap-3 mb-6">
+  <select name="action" onchange="this.form.submit()"
+    class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
+    <option value="">All actions</option>
+    {% for a in actions %}
+    <option value="{{ a.action }}" {{ 'selected' if action_filter == a.action }}>{{ a.action }}</option>
+    {% endfor %}
+  </select>
+  <input type="text" name="search" value="{{ search }}" placeholder="Search username"
+    class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
+  <button type="submit"
+    class="bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg px-4 py-2 text-sm font-medium">
+    Filter
+  </button>
+  {% if action_filter or search %}
+  <a href="{{ url_for('audit_log') }}" class="text-sm text-gray-400 hover:text-white">Clear</a>
+  {% endif %}
+</form>
+
+<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+  <table class="w-full text-sm text-left">
+    <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+      <tr>
+        <th class="px-4 py-3">Time</th>
+        <th class="px-4 py-3">User</th>
+        <th class="px-4 py-3">Action</th>
+        <th class="px-4 py-3">Target</th>
+        <th class="px-4 py-3">Details</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-800">
+      {% for log in logs %}
+      <tr>
+        <td class="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+          {{ log.timestamp[:19].replace('T', ' ') }}
+        </td>
+        <td class="px-4 py-3">{{ log.username }}</td>
+        <td class="px-4 py-3">
+          <span class="px-2 py-0.5 rounded text-xs
+            {{ 'bg-red-900 text-red-200' if 'FAILED' in log.action or log.action == 'DELETE_USER'
+               else 'bg-green-900 text-green-200' if log.action in ['LOGIN', 'CREATE_USER', 'ENABLE_USER']
+               else 'bg-blue-900 text-blue-200' }}">
+            {{ log.action }}
+          </span>
+        </td>
+        <td class="px-4 py-3 text-gray-400">{{ log.target }}</td>
+        <td class="px-4 py-3 text-gray-500 text-xs">{{ log.details }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="px-4 py-6 text-center text-gray-500">No audit log entries found.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if logs|length == 500 %}
+<p class="text-xs text-gray-500 mt-3">Showing the most recent 500 entries. Narrow with a filter to see more specific results.</p>
+{% endif %}
+{% endblock %}

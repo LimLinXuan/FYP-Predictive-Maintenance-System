@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Predictive Maintenance System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+  <nav class="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center gap-8">
+    <span class="text-blue-400 font-bold text-lg">⚙ PredictiveMaint</span>
+    <a href="/"        class="text-gray-300 hover:text-white text-sm transition-colors">Dashboard</a>
+    <a href="/records" class="text-gray-300 hover:text-white text-sm transition-colors">All Records</a>
+    <a href="/alerts"  class="text-gray-300 hover:text-white text-sm transition-colors">Alerts</a>
+    <a href="/metrics" class="text-gray-300 hover:text-white text-sm transition-colors">Metrics</a>
+    <a href="/model-comparison" class="text-gray-300 hover:text-white text-sm transition-colors">Model Comparison</a>
+    <a href="/explainability" class="text-gray-300 hover:text-white text-sm transition-colors">Explanability</a>
+    <a href="/apidocs" class="text-gray-300 hover:text-white text-sm transition-colors" target="_blank">API Docs ↗</a>
+    <a href="/stream" class="text-gray-300 hover:text-white text-sm transition-colors">Live Stream</a>
+    <a href="/health" class="text-gray-300 hover:text-white text-sm transition-colors">System Health</a>
+    {% if current_user.is_authenticated and current_user.role == 'admin' %}
+    <a href="/admin/users" class="text-purple-400 hover:text-purple-300 text-sm transition-colors">Manage Users</a>
+    <a href="/admin/audit-log" class="text-purple-400 hover:text-purple-300 text-sm transition-colors">Audit Log</a>
+    {% endif %}
+    <div class="ml-auto flex items-center gap-4">
+      {% if current_user.is_authenticated %}
+      <span class="text-gray-500 text-xs">{{ current_user.username }} ({{ current_user.role }})</span>
+
+      <!-- Notification bell -->
+      <div class="relative" id="notifBellWrap">
+        <button id="notifBellBtn" class="relative text-gray-400 hover:text-white text-sm transition-colors px-1" title="Notifications">
+          <span aria-hidden="true">🔔</span>
+          <span id="notifBadge" class="hidden absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none min-w-[15px] text-center">0</span>
+        </button>
+
+        <div id="notifDropdown" class="hidden absolute right-0 top-8 w-80 max-h-96 overflow-y-auto bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl z-50">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 text-sm font-semibold">
+            <span>Notifications</span>
+            <a href="/notifications" class="text-xs font-medium text-blue-600 hover:underline">See all</a>
+          </div>
+          <div id="notifDropdownList" class="p-1.5">
+            <div class="py-6 text-center text-gray-400 text-sm">Loading&hellip;</div>
+          </div>
+        </div>
+      </div>
+
+      <a href="/change-password" class="text-gray-400 hover:text-white text-sm transition-colors">Change Password</a>
+      <a href="/logout" class="text-gray-400 hover:text-white text-sm transition-colors">Logout</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="p-6 max-w-7xl mx-auto">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Toast container -->
+  <div id="toastContainer" class="fixed top-4 right-4 z-50 flex flex-col gap-2 w-80"></div>
+
+  <script>
+    function showToast(message, level = 'info', duration = 5000) {
+      const styles = {
+        critical: 'bg-red-900 border border-red-700 text-red-200',
+        high:     'bg-orange-900 border border-orange-700 text-orange-200',
+        medium:   'bg-yellow-900 border border-yellow-700 text-yellow-200',
+        low:      'bg-green-900 border border-green-700 text-green-200',
+        info:     'bg-gray-800 border border-gray-700 text-gray-200'
+      }
+      const cls = styles[level] || styles.info
+
+      const el = document.createElement('div')
+      el.className = `${cls} rounded-lg px-4 py-3 text-sm shadow-lg opacity-0 translate-x-4 transition-all duration-300`
+      el.textContent = message
+
+      const container = document.getElementById('toastContainer')
+      container.appendChild(el)
+
+      requestAnimationFrame(() => el.classList.remove('opacity-0', 'translate-x-4'))
+
+      setTimeout(() => {
+        el.classList.add('opacity-0', 'translate-x-4')
+        setTimeout(() => el.remove(), 300)
+      }, duration)
+    }
+  </script>
+
+  <!-- Notification bell logic -->
+  <script>
+  (function () {
+    let notifs = [];
+
+    const TYPE_META = {
+      assignment:     { icon: '👤', bg: 'bg-blue-100',  text: 'text-blue-700'  },
+      resolved:       { icon: '✅', bg: 'bg-green-100', text: 'text-green-700' },
+      false_positive: { icon: '❌', bg: 'bg-amber-100', text: 'text-amber-700' },
+      critical_alert: { icon: '🔴', bg: 'bg-red-100',   text: 'text-red-700'   },
+      risk_escalated: { icon: '⚠️', bg: 'bg-amber-100', text: 'text-amber-700' },
+      system:         { icon: '⚙️', bg: 'bg-gray-100',  text: 'text-gray-600'  },
+    };
+
+    function typeMeta(n) {
+      return TYPE_META[n.type] || (
+        n.level === 'critical' ? TYPE_META.critical_alert :
+        n.level === 'warning'  ? TYPE_META.risk_escalated :
+        TYPE_META.system
+      );
+    }
+
+    function setBadge(count) {
+      const badge = document.getElementById('notifBadge');
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : count;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    function renderDropdown() {
+      const list = document.getElementById('notifDropdownList');
+      if (!notifs.length) {
+        list.innerHTML = '<div class="py-8 text-center text-gray-400 text-sm">🎉<br>You\'re all caught up.</div>';
+        return;
+      }
+      list.innerHTML = notifs.slice(0, 8).map((n) => {
+        const meta = typeMeta(n);
+        return `
+        <div class="flex gap-2 px-2.5 py-2 rounded-md cursor-pointer hover:bg-gray-50 ${n.read_at ? '' : 'bg-blue-50'}" data-id="${n.id}">
+          <span class="w-7 h-7 rounded-full flex items-center justify-center text-sm flex-shrink-0 ${meta.bg} ${meta.text}">${meta.icon}</span>
+          <div class="min-w-0">
+            <div class="text-[12.5px] font-semibold text-gray-900">${n.title}</div>
+            <div class="text-xs text-gray-500 mt-0.5">${n.message}</div>
+          </div>
+        </div>`;
+      }).join('');
+
+      list.querySelectorAll('[data-id]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const id = parseInt(el.dataset.id, 10);
+          const n = notifs.find((x) => x.id === id);
+          if (!n) return;
+          if (!n.read_at) {
+            n.read_at = new Date().toISOString();
+            fetch(`/api/notifications/${id}/read`, { method: 'POST', keepalive: true }).catch(() => {});
+            renderDropdown();
+            setBadge(notifs.filter((x) => !x.read_at).length);
+            window.dispatchEvent(new Event('notif:sync'));
+          }
+          if (n.record_id) {
+            window.location.href = '/record/' + n.record_id;
+          }
+        });
+      });
+    }
+
+    function loadInitial() {
+      fetch('/api/notifications')
+        .then((r) => r.json())
+        .then((json) => {
+          if (json.error) return;
+          notifs = json.notifications;
+          setBadge(json.unread_count);
+          renderDropdown();
+        });
+    }
+
+    const bellBtn = document.getElementById('notifBellBtn');
+    const dropdown = document.getElementById('notifDropdown');
+    if (bellBtn) {
+      bellBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+        const wrap = document.getElementById('notifBellWrap');
+        if (wrap && !wrap.contains(e.target)) dropdown.classList.add('hidden');
+      });
+
+      // Live push — one SSE connection for the whole session, no polling.
+      const es = new EventSource('/api/notifications/stream');
+      es.onmessage = (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          notifs.unshift(payload);
+          setBadge(notifs.filter((n) => !n.read_at).length);
+          renderDropdown();
+          if (typeof showToast === 'function') {
+            const toastLevel = payload.level === 'critical' ? 'critical'
+              : payload.level === 'warning' ? 'medium' : 'info';
+            showToast(`${payload.title}: ${payload.message}`, toastLevel);
+          }
+        } catch (err) { /* keepalive ping, not JSON */ }
+      };
+
+      loadInitial();
+      window.addEventListener('notif:sync', loadInitial);
+    }
+  })();
+  </script>
+
+</body>
+</html>

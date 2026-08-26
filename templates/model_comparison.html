@@ -1,0 +1,422 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Model Comparison</h1>
+<p class="text-gray-400 text-sm mb-6">Logistic Regression vs Random Forest — performance, deployment rationale, and prediction agreement</p>
+
+<!-- ══════════════════════════════ -->
+<!-- Section 1: Performance Summary -->
+<!-- ══════════════════════════════ -->
+<div class="flex items-baseline justify-between mb-3">
+  <h2 class="text-lg font-semibold text-gray-200">Performance Summary</h2>
+  <p class="text-xs text-gray-500" id="perfMeta"></p>
+</div>
+
+<div class="grid grid-cols-2 gap-4 mb-4" id="kpiCards"></div>
+
+<div class="bg-gray-800 rounded-xl p-5 mb-4 overflow-x-auto">
+  <table class="w-full text-sm text-left">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="py-2 pr-4">Metric</th>
+        <th class="py-2 pr-4">Logistic Regression</th>
+        <th class="py-2 pr-4">Random Forest</th>
+        <th class="py-2">Better</th>
+      </tr>
+    </thead>
+    <tbody id="metricsTableBody" class="text-gray-200"></tbody>
+  </table>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 mb-8">
+  <h2 class="font-semibold text-gray-200 mb-1">Metric Comparison</h2>
+  <p class="text-gray-500 text-xs mb-4">Precision / Recall / F1 / AUC side by side</p>
+  <canvas id="metricsChart" height="220"></canvas>
+</div>
+
+<!-- ══════════════════════════════ -->
+<!-- Section 1b: Overall Evaluation -->
+<!-- ══════════════════════════════ -->
+<div class="bg-gray-800 rounded-xl p-5 mb-8 border border-gray-700">
+  <h2 class="font-semibold text-gray-200 mb-3">Overall Evaluation</h2>
+  <div class="grid grid-cols-2 gap-4" id="overallEvalCards"></div>
+</div>
+
+<!-- ══════════════════════════════ -->
+<!-- Section 2: Production Model -->
+<!-- ══════════════════════════════ -->
+<h2 class="text-lg font-semibold text-gray-200 mb-3">Production Model</h2>
+
+<div class="grid grid-cols-3 gap-4 mb-8">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Production Model</p>
+    <p class="text-2xl font-bold mt-1 text-blue-400" id="sel_model">—</p>
+    <p class="text-sm font-semibold text-green-400 mt-3">● Active</p>
+    <p class="text-xs text-gray-500 mt-1">Current deployed inference model</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5 col-span-2">
+    <p class="text-gray-400 text-sm mb-2">Why selected?</p>
+    <ul id="sel_reasons" class="text-sm text-gray-200 space-y-1 list-disc list-inside"></ul>
+    <p id="sel_caveat" class="hidden text-xs text-amber-400 mt-3 border-t border-gray-700 pt-3"></p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ -->
+<!-- Section 3: Agreement Statistics -->
+<!-- ══════════════════════════════ -->
+<h2 class="text-lg font-semibold text-gray-200 mb-3">Agreement Statistics</h2>
+
+<div class="grid grid-cols-3 gap-6 mb-8">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Total Test Samples</p>
+    <p class="text-3xl font-bold mt-1" id="d_total">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Agreement</p>
+    <p class="text-3xl font-bold mt-1 text-green-400" id="d_agree">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Disagreement</p>
+    <p class="text-3xl font-bold mt-1 text-red-400" id="d_disagree">—</p>
+  </div>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 mb-8">
+  <h2 class="font-semibold text-gray-200 mb-1">Disagreement Breakdown</h2>
+  <p class="text-gray-500 text-xs mb-4">How the disagreements split by direction</p>
+  <div class="grid grid-cols-2 gap-4">
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-gray-400 text-xs mb-1">LR → Failure, RF → Normal</p>
+      <p class="text-2xl font-bold text-orange-400" id="d_lr_fail_rf_normal">—</p>
+      <p class="text-xs text-gray-500 mt-1" id="d_lr_fail_rf_normal_tag"></p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-gray-400 text-xs mb-1">LR → Normal, RF → Failure</p>
+      <p class="text-2xl font-bold text-blue-400" id="d_lr_normal_rf_fail">—</p>
+      <p class="text-xs text-gray-500 mt-1" id="d_lr_normal_rf_fail_tag"></p>
+    </div>
+  </div>
+  <div id="keyObservation" class="hidden mt-4 pt-4 border-t border-gray-700 flex gap-2 items-start">
+    <span>💡</span>
+    <p class="text-sm text-gray-200" id="keyObservationText"></p>
+  </div>
+</div>
+
+<div class="grid grid-cols-2 gap-6 mb-8">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-1">Agreement Breakdown</h2>
+    <p class="text-gray-500 text-xs mb-4">Share of test records where LR and RF agree vs disagree</p>
+    <canvas id="agreementDonut" height="220"></canvas>
+  </div>
+
+  <!-- Section 4: Error Analysis (FN + FP) -->
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-1">Missed Failures &amp; False Alarms</h2>
+    <p class="text-gray-500 text-xs mb-4">Missed failures (false negatives) and false alarms (false positives) per model</p>
+    <canvas id="fnChart" height="220"></canvas>
+    <p class="text-xs text-gray-500 mt-3">Fewer missed failures means less risk of an unexpected machine failure going undetected.</p>
+  </div>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 mb-8 overflow-x-auto">
+  <h2 class="font-semibold text-gray-200 mb-1">Confusion Matrix</h2>
+  <p class="text-gray-500 text-xs mb-4">Threshold = 0.5 — actual vs predicted labels on the test set (<span id="cmTotal">—</span> samples)</p>
+  <div class="grid grid-cols-2 gap-8">
+    <div>
+      <p class="text-sm text-gray-300 font-semibold mb-2">Logistic Regression</p>
+      <table class="text-sm text-center border-collapse w-full" id="lrConfusionTable"></table>
+    </div>
+    <div>
+      <p class="text-sm text-gray-300 font-semibold mb-2">Random Forest</p>
+      <table class="text-sm text-center border-collapse w-full" id="rfConfusionTable"></table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════ -->
+<!-- Section 5: Prediction Disagreement -->
+<!-- ══════════════════════════════ -->
+<h2 class="text-lg font-semibold text-gray-200 mb-3">Prediction Disagreement</h2>
+
+<div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <h2 class="font-semibold text-gray-200 mb-1">Disagreement Records</h2>
+      <p class="text-gray-500 text-xs">Sorted by probability gap between LR and RF (largest first)</p>
+    </div>
+    <input
+      id="disagreementSearch"
+      type="text"
+      placeholder="Search by record ID or risk level..."
+      class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500 w-64"
+    >
+  </div>
+  <table class="w-full text-sm text-left">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="py-2 pr-4">Record</th>
+        <th class="py-2 pr-4">LR Prediction</th>
+        <th class="py-2 pr-4">RF Prediction</th>
+        <th class="py-2 pr-4">Actual</th>
+        <th class="py-2 pr-4">Risk Level</th>
+        <th class="py-2 pr-4">Difference / Confidence</th>
+        <th class="py-2 pr-4">Top SHAP</th>
+        <th class="py-2"></th>
+      </tr>
+    </thead>
+    <tbody id="disagreementTableBody" class="text-gray-200"></tbody>
+  </table>
+  <p id="disagreementEmpty" class="text-gray-500 text-sm text-center py-6 hidden">No matching records.</p>
+</div>
+
+<script>
+const CHART_DEFAULTS = {
+  plugins: { legend: { labels: { color: '#d1d5db' } } },
+  scales: {
+    x: { ticks: { color: '#6b7280' }, grid: { color: '#374151' } },
+    y: { ticks: { color: '#6b7280' }, grid: { color: '#374151' }, beginAtZero: true }
+  }
+}
+
+function riskColor(level) {
+  return { Critical: 'text-red-400', High: 'text-orange-400', Medium: 'text-yellow-400', Low: 'text-green-400' }[level] || 'text-gray-400'
+}
+
+function confidenceLabel(gapPct) {
+  if (gapPct >= 70) return 'Very High'
+  if (gapPct >= 50) return 'High'
+  if (gapPct >= 20) return 'Medium'
+  return 'Low'
+}
+
+let allDisagreements = []
+
+function renderDisagreementTable(rows) {
+  const tbody = document.getElementById('disagreementTableBody')
+  const empty = document.getElementById('disagreementEmpty')
+
+  if (rows.length === 0) {
+    tbody.innerHTML = ''
+    empty.classList.remove('hidden')
+    return
+  }
+  empty.classList.add('hidden')
+
+  tbody.innerHTML = rows.map(r => `
+    <tr class="border-b border-gray-800">
+      <td class="py-2 pr-4">#${r.record_id}</td>
+      <td class="py-2 pr-4">${r.lr_pred ? 'Failure' : 'Normal'} <span class="text-gray-500">(${(r.pred_prob_lr * 100).toFixed(1)}%)</span></td>
+      <td class="py-2 pr-4">${r.rf_pred ? 'Failure' : 'Normal'} <span class="text-gray-500">(${(r.pred_prob_rf * 100).toFixed(1)}%)</span></td>
+      <td class="py-2 pr-4">${r.actual_failure ? 'Failure' : 'Normal'}</td>
+      <td class="py-2 pr-4 font-semibold ${riskColor(r.risk_level)}">${r.risk_level}</td>
+      <td class="py-2 pr-4 text-gray-300">${r.prob_gap_pct}% <span class="text-gray-500 text-xs">(${confidenceLabel(r.prob_gap_pct)})</span></td>
+      <td class="py-2 pr-4 text-gray-400 text-xs">${r.shap_explanation ?? '—'}</td>
+      <td class="py-2">
+        <a href="/record/${r.record_id}" class="text-blue-400 hover:text-blue-300 text-xs whitespace-nowrap">View Detail →</a>
+      </td>
+    </tr>
+  `).join('')
+}
+
+document.getElementById('disagreementSearch').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase()
+  if (!q) { renderDisagreementTable(allDisagreements); return }
+  const filtered = allDisagreements.filter(r =>
+    String(r.record_id).includes(q) || (r.risk_level || '').toLowerCase().includes(q)
+  )
+  renderDisagreementTable(filtered)
+})
+
+async function load() {
+  const data = await fetch('/api/model-comparison').then(r => r.json())
+  if (data.error) { showToast(data.error, 'critical'); return }
+
+  const lr = data.metrics.find(m => m.Model === 'Logistic Regression')
+  const rf = data.metrics.find(m => m.Model === 'Random Forest')
+
+  // KPI cards — one per model
+  document.getElementById('kpiCards').innerHTML = `
+    <div class="bg-gray-800 rounded-xl p-5">
+      <p class="text-gray-400 text-sm mb-2">Logistic Regression</p>
+      <p class="text-xs text-gray-500">Precision <span class="text-gray-200 font-semibold">${lr.Precision}</span> ·
+         Recall <span class="text-gray-200 font-semibold">${lr.Recall}</span> ·
+         F1 <span class="text-gray-200 font-semibold">${lr.F1}</span> ·
+         AUC <span class="text-gray-200 font-semibold">${lr.AUC}</span></p>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-5">
+      <p class="text-gray-400 text-sm mb-2">Random Forest</p>
+      <p class="text-xs text-gray-500">Precision <span class="text-blue-400 font-semibold">${rf.Precision}</span> ·
+         Recall <span class="text-blue-400 font-semibold">${rf.Recall}</span> ·
+         F1 <span class="text-blue-400 font-semibold">${rf.F1}</span> ·
+         AUC <span class="text-blue-400 font-semibold">${rf.AUC}</span></p>
+    </div>
+  `
+
+  // Metrics table
+  const rows = ['Precision', 'Recall', 'F1', 'AUC'].map(metric => {
+    const better = rf[metric] >= lr[metric] ? 'Random Forest' : 'Logistic Regression'
+    return `
+      <tr class="border-b border-gray-800">
+        <td class="py-2 pr-4">${metric}</td>
+        <td class="py-2 pr-4">${lr[metric]}</td>
+        <td class="py-2 pr-4">${rf[metric]}</td>
+        <td class="py-2 text-green-400">${better}</td>
+      </tr>`
+  }).join('')
+  document.getElementById('metricsTableBody').innerHTML = rows
+  document.getElementById('perfMeta').textContent = `Test Samples = ${data.total_records}`
+
+  // Metrics bar chart
+  new Chart(document.getElementById('metricsChart'), {
+    type: 'bar',
+    data: {
+      labels: ['Precision', 'Recall', 'F1', 'AUC'],
+      datasets: [
+        { label: 'Logistic Regression', data: ['Precision','Recall','F1','AUC'].map(m => lr[m]), backgroundColor: '#6b7280', borderRadius: 6 },
+        { label: 'Random Forest', data: ['Precision','Recall','F1','AUC'].map(m => rf[m]), backgroundColor: '#3b82f6', borderRadius: 6 }
+      ]
+    },
+    options: CHART_DEFAULTS
+  })
+
+  // Overall Evaluation — executive summary, generated from the same metrics as the table above
+  const lrStrengths = []
+  const rfStrengths = []
+  if (lr.Recall > rf.Recall) lrStrengths.push(`Higher recall (${lr.Recall} vs ${rf.Recall}) — better at detecting failures`)
+  if (lr.AUC > rf.AUC) lrStrengths.push(`Higher ROC-AUC (${lr.AUC} vs ${rf.AUC})`)
+  if (data.lr_false_negatives < data.rf_false_negatives) lrStrengths.push(`Fewer missed failures (${data.lr_false_negatives} vs ${data.rf_false_negatives})`)
+  if (rf.Precision > lr.Precision) rfStrengths.push(`Higher precision (${rf.Precision} vs ${lr.Precision}) — fewer false alarms`)
+  if (rf.F1 > lr.F1) rfStrengths.push(`Higher F1 score (${rf.F1} vs ${lr.F1})`)
+  rfStrengths.push('Supports SHAP-based explainability across the dashboard')
+
+  document.getElementById('overallEvalCards').innerHTML = `
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-sm font-semibold text-gray-200 mb-2">✓ Logistic Regression</p>
+      <ul class="text-xs text-gray-400 space-y-1 list-disc list-inside">
+        ${lrStrengths.map(s => `<li>${s}</li>`).join('')}
+      </ul>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-sm font-semibold text-blue-400 mb-2">✓ Random Forest</p>
+      <ul class="text-xs text-gray-400 space-y-1 list-disc list-inside">
+        ${rfStrengths.map(s => `<li>${s}</li>`).join('')}
+      </ul>
+      <p class="text-xs text-blue-300 mt-2 pt-2 border-t border-gray-800">Selected for deployment.</p>
+    </div>
+  `
+
+  // Model Selection — Random Forest is the actual production model: decision_log.pred_prob,
+  // the SHAP explainer (shap.TreeExplainer(rf) — tree-only, no LR equivalent built), and every
+  // other page (Dashboard, Alerts, Record Detail, Risk Engine) are all wired to RF's output.
+  // This is fixed, not re-derived from whichever model wins on a given metric — otherwise this
+  // card could claim "LR is production" while the rest of the system still runs on RF underneath.
+  const production = rf
+  const other = lr
+  document.getElementById('sel_model').textContent = 'Random Forest'
+
+  const reasons = []
+  if (production.Precision > other.Precision) reasons.push(`Higher precision (${production.Precision} vs ${other.Precision}) — fewer false alarms`)
+  if (production.F1 > other.F1) reasons.push(`Higher F1 score (${production.F1} vs ${other.F1}) — better precision/recall balance`)
+  reasons.push('Native SHAP TreeExplainer support — every risk score across the dashboard (Alerts, Record Detail, Decision Log) is paired with a per-record SHAP explanation, which only the tree-based RF model supports here')
+  document.getElementById('sel_reasons').innerHTML = reasons.map(r => `<li>${r}</li>`).join('')
+
+  // Honest caveat — don't hide it when LR actually wins on recall/AUC/false negatives.
+  const caveatEl = document.getElementById('sel_caveat')
+  const lrWinsRecall = other.Recall > production.Recall
+  const lrWinsAUC = other.AUC > production.AUC
+  const lrFewerFN = data.lr_false_negatives < data.rf_false_negatives
+  if (lrWinsRecall || lrWinsAUC || lrFewerFN) {
+    caveatEl.textContent = `Logistic Regression achieved higher recall, whereas Random Forest produced fewer false alarms and was selected as the deployed model for its precision and SHAP-based explainability integration.`
+    caveatEl.classList.remove('hidden')
+  } else {
+    caveatEl.classList.add('hidden')
+  }
+
+  // Agreement KPIs
+  document.getElementById('d_total').textContent    = data.total_records
+  document.getElementById('d_agree').textContent    = `${data.agreement_count} (${data.agreement_pct})`
+  document.getElementById('d_disagree').textContent = `${data.disagreement_count} (${data.disagreement_pct})`
+
+  // Disagreement Breakdown — which direction the disagreements split
+  const lrFailRfNormal = data.rf_normal_lr_failure  // LR says Failure, RF says Normal
+  const lrNormalRfFail = data.rf_failure_lr_normal  // LR says Normal, RF says Failure
+  document.getElementById('d_lr_fail_rf_normal').textContent = lrFailRfNormal
+  document.getElementById('d_lr_normal_rf_fail').textContent = lrNormalRfFail
+  document.getElementById('d_lr_fail_rf_normal_tag').textContent = lrFailRfNormal > 0 ? '(Aggressive prediction)' : '(Not observed)'
+  document.getElementById('d_lr_normal_rf_fail_tag').textContent = lrNormalRfFail > 0 ? '(Aggressive prediction)' : '(Not observed)'
+
+  // Key Observation — only surface this when the split is lopsided (one side near 0),
+  // since that's the case where a one-line finding is actually informative.
+  const koEl = document.getElementById('keyObservation')
+  const koText = document.getElementById('keyObservationText')
+  const totalDisagree = lrFailRfNormal + lrNormalRfFail
+  if (totalDisagree > 0 && (lrFailRfNormal === 0 || lrNormalRfFail === 0)) {
+    const allCount = lrFailRfNormal > 0 ? lrFailRfNormal : lrNormalRfFail
+    const pattern = lrFailRfNormal > 0
+      ? 'Logistic Regression predicted Failure while Random Forest predicted Normal'
+      : 'Random Forest predicted Failure while Logistic Regression predicted Normal'
+    const oppositeNotSeen = lrFailRfNormal > 0
+      ? 'No cases were found where Random Forest predicted Failure while Logistic Regression predicted Normal.'
+      : 'No cases were found where Logistic Regression predicted Failure while Random Forest predicted Normal.'
+    koText.textContent = `${allCount} of ${totalDisagree} disagreement cases (${((allCount / totalDisagree) * 100).toFixed(0)}%) occurred when ${pattern}. ${oppositeNotSeen}`
+    koEl.classList.remove('hidden')
+  } else {
+    koEl.classList.add('hidden')
+  }
+
+  // Agreement donut
+  new Chart(document.getElementById('agreementDonut'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Agree', 'Disagree'],
+      datasets: [{ data: [data.agreement_count, data.disagreement_count], backgroundColor: ['#22c55e', '#ef4444'], borderWidth: 0 }]
+    },
+    options: { plugins: { legend: { labels: { color: '#d1d5db' } } }, cutout: '60%' }
+  })
+
+  // Error analysis: false negatives + false positives, grouped by model
+  new Chart(document.getElementById('fnChart'), {
+    type: 'bar',
+    data: {
+      labels: ['False Negatives', 'False Positives'],
+      datasets: [
+        { label: 'Logistic Regression', data: [data.lr_false_negatives, data.lr_false_positives], backgroundColor: '#6b7280', borderRadius: 6 },
+        { label: 'Random Forest', data: [data.rf_false_negatives, data.rf_false_positives], backgroundColor: '#3b82f6', borderRadius: 6 }
+      ]
+    },
+    options: CHART_DEFAULTS
+  })
+
+  // Confusion matrices
+  document.getElementById('cmTotal').textContent = data.total_records
+
+  function renderConfusion(el, cm) {
+    el.innerHTML = `
+      <tr>
+        <td class="p-2"></td>
+        <td class="p-2 text-gray-400 text-xs">Pred Normal</td>
+        <td class="p-2 text-gray-400 text-xs">Pred Failure</td>
+      </tr>
+      <tr>
+        <td class="p-2 text-gray-400 text-xs text-right pr-2">Actual Normal</td>
+        <td class="p-2 bg-green-900/40 text-green-300 font-semibold rounded-lg">${cm.tn}</td>
+        <td class="p-2 bg-red-900/40 text-red-300 font-semibold rounded-lg">${cm.fp}</td>
+      </tr>
+      <tr>
+        <td class="p-2 text-gray-400 text-xs text-right pr-2">Actual Failure</td>
+        <td class="p-2 bg-red-900/40 text-red-300 font-semibold rounded-lg">${cm.fn}</td>
+        <td class="p-2 bg-green-900/40 text-green-300 font-semibold rounded-lg">${cm.tp}</td>
+      </tr>
+    `
+  }
+  renderConfusion(document.getElementById('lrConfusionTable'), data.lr_confusion)
+  renderConfusion(document.getElementById('rfConfusionTable'), data.rf_confusion)
+
+  // Disagreement table (with search)
+  allDisagreements = data.disagreements
+  renderDisagreementTable(allDisagreements)
+}
+
+load()
+</script>
+{% endblock %}

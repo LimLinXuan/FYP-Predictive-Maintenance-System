@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+
+{% block content %}
+<div class="notif-wrap">
+
+  <div class="notif-header">
+    <div>
+      <h1>Notifications</h1>
+      <p class="notif-sub">Assignment and alert-resolution history. New notifications arrive live &mdash; no need to refresh.</p>
+    </div>
+    <button id="markAllBtn" class="notif-btn-outline">Mark all as read</button>
+  </div>
+
+  <div class="notif-filters">
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="unread">Unread</button>
+    <button class="filter-btn" data-filter="assignment">Assignments</button>
+    <button class="filter-btn" data-filter="resolved">Resolved</button>
+    <button class="filter-btn" data-filter="critical">Critical</button>
+  </div>
+
+  <div id="loadingState" class="card notif-loading">Loading notifications&hellip;</div>
+  <div id="emptyState" class="card notif-loading" style="display:none;">No notifications yet.</div>
+
+  <div id="notifList" class="notif-list"></div>
+
+</div>
+
+<style>
+  .notif-wrap { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
+  .notif-header { display: flex; justify-content: space-between; align-items: flex-start;
+                  gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .notif-header h1 { margin: 0 0 4px; font-size: 24px; }
+  .notif-sub { color: #6b7280; font-size: 14px; margin: 0; }
+
+  .notif-btn-outline { border: 1px solid #d1d5db; background: #fff; color: #374151;
+                        padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .notif-btn-outline:hover { background: #f9fafb; }
+
+  .notif-filters { display: flex; gap: 8px; margin-bottom: 16px; }
+  .filter-btn { border: 1px solid #d1d5db; background: #f9fafb; color: #374151;
+                padding: 6px 14px; border-radius: 999px; font-size: 13px; cursor: pointer; }
+  .filter-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; }
+  .notif-loading { text-align: center; color: #9ca3af; padding: 48px 0; }
+
+  .notif-list { display: flex; flex-direction: column; gap: 8px; }
+  .notif-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+                padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start;
+                cursor: pointer; transition: background 0.15s; }
+  .notif-item:hover { background: #f9fafb; }
+  .notif-item.unread { background: #eff6ff; border-color: #bfdbfe; }
+
+  .notif-icon { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+                justify-content: center; font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+  .notif-body { flex: 1; min-width: 0; }
+  .notif-title { font-size: 14px; font-weight: 600; color: #111827; }
+  .notif-message { font-size: 13px; color: #6b7280; margin-top: 2px; }
+  .notif-time { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+  .notif-record-link { font-size: 12px; color: #2563eb; text-decoration: none; white-space: nowrap; }
+  .notif-record-link:hover { text-decoration: underline; }
+</style>
+
+<script>
+(function () {
+  let allNotifs = [];
+  let filter = 'all';
+
+  const TYPE_META = {
+    assignment:     { icon: '👤', bg: '#dbeafe', text: '#1d4ed8' },
+    resolved:       { icon: '✅', bg: '#dcfce7', text: '#15803d' },
+    false_positive: { icon: '❌', bg: '#fef3c7', text: '#b45309' },
+    critical_alert: { icon: '🔴', bg: '#fee2e2', text: '#b91c1c' },
+    risk_escalated: { icon: '⚠️', bg: '#fef3c7', text: '#b45309' },
+    system:         { icon: '⚙️', bg: '#f3f4f6', text: '#4b5563' },
+  };
+
+  function typeMeta(n) {
+    return TYPE_META[n.type] || (
+      n.level === 'critical' ? TYPE_META.critical_alert :
+      n.level === 'warning'  ? TYPE_META.risk_escalated :
+      TYPE_META.system
+    );
+  }
+
+  function matchesFilter(n) {
+    if (filter === 'unread') return !n.read_at;
+    if (filter === 'assignment') return n.type === 'assignment';
+    if (filter === 'resolved') return n.type === 'resolved' || n.type === 'false_positive';
+    if (filter === 'critical') return n.type === 'critical_alert' || n.type === 'risk_escalated' || n.level === 'critical';
+    return true;
+  }
+
+  function timeAgo(iso) {
+    const then = new Date(iso + 'Z').getTime();
+    const diffSec = Math.floor((Date.now() - then) / 1000);
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+    if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+    return Math.floor(diffSec / 86400) + 'd ago';
+  }
+
+  function render() {
+    const list = document.getElementById('notifList');
+    const items = allNotifs.filter(matchesFilter);
+
+    document.getElementById('emptyState').style.display = items.length ? 'none' : 'block';
+    document.getElementById('emptyState').innerHTML = filter === 'all'
+      ? '🎉<br>You\'re all caught up. No new notifications.'
+      : 'Nothing here for this filter.';
+
+    list.innerHTML = items.map((n) => {
+      const meta = typeMeta(n);
+      return `
+      <div class="notif-item ${n.read_at ? '' : 'unread'}" data-id="${n.id}">
+        <span class="notif-icon" style="background:${meta.bg};color:${meta.text};">${meta.icon}</span>
+        <div class="notif-body">
+          <div class="notif-title">${n.title}</div>
+          <div class="notif-message">${n.message}</div>
+          <div class="notif-time">${timeAgo(n.created_at)}</div>
+        </div>
+        ${n.record_id ? `<a class="notif-record-link" href="/record/${n.record_id}">View record &rarr;</a>` : ''}
+      </div>`;
+    }).join('');
+
+    list.querySelectorAll('.notif-item').forEach((el) => {
+      el.addEventListener('click', () => markRead(parseInt(el.dataset.id, 10)));
+    });
+  }
+
+  function markRead(id) {
+    const n = allNotifs.find((x) => x.id === id);
+    if (!n || n.read_at) return;
+    n.read_at = new Date().toISOString();
+    render();
+    fetch(`/api/notifications/${id}/read`, { method: 'POST', keepalive: true }).catch(() => {});
+    window.dispatchEvent(new Event('notif:sync'));
+  }
+
+  function load() {
+    fetch('/api/notifications')
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.error) throw new Error(json.error);
+        allNotifs = json.notifications;
+        document.getElementById('loadingState').style.display = 'none';
+        render();
+      })
+      .catch((err) => {
+        document.getElementById('loadingState').textContent = 'Could not load notifications: ' + err.message;
+      });
+  }
+
+  document.getElementById('markAllBtn').addEventListener('click', () => {
+    allNotifs.forEach((n) => { n.read_at = n.read_at || new Date().toISOString(); });
+    render();
+    fetch('/api/notifications/read-all', { method: 'POST', keepalive: true }).catch(() => {});
+    window.dispatchEvent(new Event('notif:sync'));
+  });
+
+  document.querySelectorAll('.filter-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      filter = btn.dataset.filter;
+      render();
+    });
+  });
+
+  // Live updates via the same SSE connection the nav bell uses. If this
+  // page defines its own EventSource (rather than sharing the bell's),
+  // that's fine — SSE connections are cheap and the browser dedupes by URL.
+  const es = new EventSource('/api/notifications/stream');
+  es.onmessage = (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+      allNotifs.unshift(payload);
+      render();
+    } catch (err) { /* ping frames aren't JSON, ignore */ }
+  };
+
+  window.addEventListener('notif:sync', load);
+  load();
+})();
+</script>
+{% endblock %}

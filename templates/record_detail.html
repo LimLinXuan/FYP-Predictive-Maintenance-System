@@ -1,0 +1,983 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- Back button -->
+<a href="/alerts" class="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-6 transition-colors">
+  ← Back to Alerts
+</a>
+
+<!-- Page header -->
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Machine Record <span class="font-mono text-blue-400">#{{ record_id }}</span></h1>
+    <p class="text-gray-400 text-sm mt-1">Full sensor data, risk analysis, and SHAP explanation</p>
+  </div>
+  <div class="flex items-center gap-3">
+    <div id="alertStatusBadge" class="text-sm font-bold px-4 py-2 rounded-full bg-gray-800 text-gray-400">—</div>
+    <div id="headerBadge" class="text-sm font-bold px-4 py-2 rounded-full bg-gray-800 text-gray-400">Loading...</div>
+  </div>
+</div>
+
+<!-- Top row: Risk summary cards -->
+<div class="grid grid-cols-3 gap-4 mb-6" id="summaryCards">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Failure Probability</p>
+    <p class="text-3xl font-bold mt-1 text-blue-400" id="predProb">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5 relative">
+    <div class="flex items-center gap-1.5">
+      <p class="text-gray-400 text-sm">Risk Score</p>
+      <button id="riskScoreInfoBtn" type="button"
+        class="text-gray-500 hover:text-gray-300 transition-colors focus:outline-none"
+        aria-label="How is Risk Score calculated?">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M18 10A8 8 0 11 2 10a8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+        </svg>
+      </button>
+    </div>
+    <p class="text-3xl font-bold mt-1 text-orange-400" id="riskScore">—</p>
+
+    <!-- Tooltip popover -->
+    <div id="riskScoreTooltip"
+      class="hidden absolute z-20 top-full mt-2 left-0 w-80 bg-gray-900 border border-gray-700 rounded-lg p-4 shadow-xl text-left">
+      <p class="text-sm font-semibold text-gray-100 mb-2">How Risk Score is calculated</p>
+      <ul class="text-xs text-gray-400 space-y-1 mb-3 list-disc list-inside">
+        <li>ML Prediction (0–50 pts)</li>
+        <li>Rule Engine — HDF / PWF / OSF conditions (0–30 pts)</li>
+        <li>Anomaly Detection — Isolation Forest &amp; Z-score (0–20 pts)</li>
+        <li>Probability Safety Floor Policy</li>
+      </ul>
+      <div class="border-t border-gray-700 pt-2">
+        <p class="text-xs text-gray-500 mb-1">For this record:</p>
+        <p class="text-xs text-gray-300" id="riskScoreTooltipDetail">—</p>
+      </div>
+    </div>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Confidence</p>
+    <p class="text-3xl font-bold mt-1 text-purple-400" id="confidence">—</p>
+    <p class="text-xs text-gray-500 mt-1" id="confidenceLabel">—</p>
+  </div>
+</div>
+
+<!-- Decision Pipeline -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6">
+  <h2 class="font-semibold text-gray-200 mb-1">Decision Pipeline</h2>
+  <p class="text-gray-500 text-xs mb-2">View how this prediction was generated.</p>
+  <p class="text-sm text-gray-300 mb-6" id="pipelineSummarySentence">Loading assessment summary...</p>
+
+  <div class="flex items-center mb-6" id="pipelineStepper"></div>
+
+  <div class="flex items-center gap-2 mb-6 flex-wrap text-xs" id="scoreBuildup"></div>
+
+  <div id="pipelineDetail" class="bg-gray-900 rounded-lg p-5 min-h-[140px]"></div>
+</div>
+
+<!-- Middle row: Recommended Action + SHAP bar -->
+<div class="grid grid-cols-2 gap-6 mb-6">
+
+  <!-- Recommended action + reasons -->
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-4">Recommended Maintenance</h2>
+
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <div class="bg-gray-900 rounded-lg p-4">
+        <p class="text-sm text-gray-400 mb-1">Priority</p>
+        <p class="font-bold text-lg" id="priority">—</p>
+      </div>
+      <div class="bg-gray-900 rounded-lg p-4">
+        <p class="text-sm text-gray-400 mb-1">Inspection Window</p>
+        <p class="font-bold text-lg text-gray-100" id="inspectionWindow">—</p>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 rounded-lg p-4 mb-4">
+      <p class="text-sm text-gray-400 mb-1">Action</p>
+      <p class="text-gray-100 font-medium" id="action">—</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4 mb-4">
+      <p class="text-sm text-gray-400 mb-2">Failure Reasons</p>
+      <div id="failureBadges" class="flex flex-wrap gap-2">—</div>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4 mb-4">
+      <p class="text-sm text-gray-400 mb-2">Primary Causes</p>
+      <ol class="space-y-1 text-sm text-gray-100" id="businessExplanation">—</ol>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-sm text-gray-400 mb-1">Technical Explanation (SHAP Engine)</p>
+      <p class="text-blue-300 text-sm" id="shapExplanation">—</p>
+    </div>
+  </div>
+
+  <!-- SHAP bar chart -->
+  <div class="bg-gray-800 rounded-xl p-5" id="shapSection">
+    <h2 class="font-semibold text-gray-200 mb-1">Top SHAP Features</h2>
+    <p class="text-gray-500 text-xs mb-4">Features driving this record's risk prediction</p>
+    <canvas id="shapChart" height="200"></canvas>
+  </div>
+
+</div>
+
+<!-- Raw sensor data -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6">
+  <h2 class="font-semibold text-gray-200 mb-4">Sensor Readings</h2>
+  <div class="grid grid-cols-3 gap-3" id="sensorGrid">
+    <p class="text-gray-500 text-sm col-span-3">Loading sensor data...</p>
+  </div>
+</div>
+
+<!-- Update status -->
+<div class="bg-gray-800 rounded-xl p-5">
+  <h2 class="font-semibold text-gray-200 mb-4">Update Alert Status</h2>
+  <div class="flex gap-3 flex-wrap" id="statusButtons">—</div>
+  <p class="text-green-400 text-sm mt-3 hidden" id="updateMsg">Status updated successfully.</p>
+</div>
+
+<!-- Resolution Information -->
+<div class="bg-gray-800 rounded-xl p-5 mt-6 hidden" id="resolutionCard">
+  <h2 class="font-semibold text-gray-200 mb-4">Resolution Information</h2>
+  <div class="grid grid-cols-2 gap-4 mb-4">
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-sm text-gray-400 mb-1">Resolved By</p>
+      <p class="font-bold text-lg text-gray-100" id="resolvedBy">—</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4">
+      <p class="text-sm text-gray-400 mb-1">Resolved At</p>
+      <p class="font-bold text-lg text-gray-100" id="resolvedAt">—</p>
+    </div>
+  </div>
+  <div class="bg-gray-900 rounded-lg p-4">
+    <p class="text-sm text-gray-400 mb-1">Resolution Note</p>
+    <p class="text-gray-100" id="resolutionNote">—</p>
+  </div>
+</div>
+
+<!-- Current Assignee -->
+<div class="bg-gray-800 rounded-xl p-5 mt-6">
+  <h2 class="font-semibold text-gray-200 mb-4">Current Assignee</h2>
+  <div id="currentAssigneeBox">—</div>
+</div>
+
+<!-- Assignment History -->
+<div class="bg-gray-800 rounded-xl p-5 mt-6">
+  <h2 class="font-semibold text-gray-200 mb-1">Assignment History</h2>
+  <p class="text-gray-500 text-xs mb-4">Full audit trail of assignment and status changes for this record.</p>
+  <div id="historyTimeline" class="space-y-4">
+    <p class="text-gray-500 text-sm">Loading history...</p>
+  </div>
+</div>
+
+<script>
+const RECORD_ID = {{ record_id }}
+const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
+
+let currentRiskLevel  = null
+let currentAssignedTo = null
+let technicianList    = []
+
+const levelColor = {
+  Critical: { text: 'text-red-400',    bg: 'bg-red-900 border border-red-700' },
+  High:     { text: 'text-orange-400', bg: 'bg-orange-900 border border-orange-700' },
+  Medium:   { text: 'text-yellow-400', bg: 'bg-yellow-900 border border-yellow-700' },
+  Low:      { text: 'text-green-400',  bg: 'bg-green-900 border border-green-700' }
+}
+const statusColor = {
+  OPEN:           'text-red-400',
+  IN_PROGRESS:    'text-yellow-400',
+  RESOLVED:       'text-green-400',
+  FALSE_POSITIVE: 'text-gray-400'
+}
+
+const SENSOR_FIELDS = [
+  'air_temp', 'process_temp', 'rpm', 'torque', 'tool_wear',
+  'temp_diff', 'power', 'tool_torque'
+]
+const SENSOR_LABELS = {
+  air_temp:     'Air Temperature',
+  process_temp: 'Process Temperature',
+  rpm:          'Rotational Speed',
+  torque:       'Torque',
+  tool_wear:    'Tool Wear',
+  temp_diff:    'Temp Differential',
+  power:        'Power',
+  tool_torque:  'Tool × Torque'
+}
+const SENSOR_UNITS = {
+  air_temp:     'K',
+  process_temp: 'K',
+  rpm:          'rpm',
+  torque:       'Nm',
+  tool_wear:    'min',
+  temp_diff:    'K',
+  power:        'W',
+  tool_torque:  ''
+}
+
+function sensorStatus(field, data) {
+  if (field === 'temp_diff') {
+    if (data.temp_diff < 8.6 && data.rpm < 1380) return { icon: '⚠', label: 'Low (HDF risk)', cls: 'text-red-400' }
+    return { icon: '✓', label: 'Normal', cls: 'text-green-400' }
+  }
+  if (field === 'rpm') {
+    if (data.temp_diff < 8.6 && data.rpm < 1380) return { icon: '⚠', label: 'Low (HDF risk)', cls: 'text-red-400' }
+    return { icon: '✓', label: 'Normal', cls: 'text-green-400' }
+  }
+  if (field === 'power') {
+    if (data.power < 3500) return { icon: '⚠', label: 'Low (PWF risk)', cls: 'text-orange-400' }
+    if (data.power > 9000) return { icon: '⚠', label: 'High (PWF risk)', cls: 'text-orange-400' }
+    return { icon: '✓', label: 'Normal', cls: 'text-green-400' }
+  }
+  if (field === 'tool_torque') {
+    if (data.tool_torque > 11000) return { icon: '⚠', label: 'High (OSF risk)', cls: 'text-purple-400' }
+    return { icon: '✓', label: 'Normal', cls: 'text-green-400' }
+  }
+  return null
+}
+
+const FAILURE_BADGES = {
+  HDF: { label: 'Heat Dissipation Failure', cls: 'bg-red-900 text-red-300 border border-red-700' },
+  PWF: { label: 'Power Failure',             cls: 'bg-orange-900 text-orange-300 border border-orange-700' },
+  OSF: { label: 'Overstrain Failure',        cls: 'bg-purple-900 text-purple-300 border border-purple-700' },
+  TWF: { label: 'Tool Wear Failure',         cls: 'bg-yellow-900 text-yellow-300 border border-yellow-700' },
+  RNF: { label: 'Random Failure',            cls: 'bg-gray-700 text-gray-300 border border-gray-500' }
+}
+
+function machineState(riskLevel, alertStatus) {
+  if (alertStatus === 'OK') {
+    if (riskLevel === 'Low')    return { text: 'Healthy',    cls: 'text-green-400' }
+    if (riskLevel === 'Medium') return { text: 'Monitoring', cls: 'text-yellow-400' }
+    return { text: 'OK', cls: 'text-blue-400' }
+  }
+  return { text: alertStatus.replace('_',' '), cls: statusColor[alertStatus] || 'text-gray-300' }
+}
+
+function stateBadgeStyle(riskLevel, alertStatus) {
+  if (alertStatus === 'OK') {
+    if (riskLevel === 'Low')    return { text: 'Healthy',    cls: 'bg-green-900 border border-green-700 text-green-400' }
+    if (riskLevel === 'Medium') return { text: 'Monitoring', cls: 'bg-yellow-900 border border-yellow-700 text-yellow-400' }
+    return { text: 'OK', cls: 'bg-blue-900 border border-blue-700 text-blue-400' }
+  }
+  const map = {
+    OPEN:           { cls: 'bg-red-900 border border-red-700 text-red-400' },
+    ASSIGNED:       { cls: 'bg-orange-900 border border-orange-700 text-orange-400' },
+    IN_PROGRESS:    { cls: 'bg-yellow-900 border border-yellow-700 text-yellow-400' },
+    RESOLVED:       { cls: 'bg-green-900 border border-green-700 text-green-400' },
+    FALSE_POSITIVE: { cls: 'bg-gray-700 border border-gray-500 text-gray-300' },
+  }
+  const m = map[alertStatus] || { cls: 'bg-gray-800 border border-gray-600 text-gray-300' }
+  return { text: alertStatus.replace('_', ' '), cls: m.cls }
+}
+
+let pipelineData = null
+let activeStageIndex = 6
+
+const PIPELINE_STAGES = [
+  { label: 'Raw Data' },
+  { label: 'Features' },
+  { label: 'ML Prediction' },
+  { label: 'Rule Engine' },
+  { label: 'Anomaly' },
+  { label: 'Safety Floor' },
+  { label: 'Decision' },
+  { label: 'Explain' },
+]
+
+const SAFETY_FLOOR_TABLE = [
+  { threshold: 0.90, floor: 90 },
+  { threshold: 0.80, floor: 80 },
+  { threshold: 0.70, floor: 70 },
+  { threshold: 0.50, floor: 50 },
+]
+
+function computeFloor(prob) {
+  for (const row of SAFETY_FLOOR_TABLE) {
+    if (prob >= row.threshold) return row.floor
+  }
+  return 0
+}
+
+function computePipeline(data) {
+  const prob = data.pred_prob
+  const mlPts = Math.round(prob * 50)
+  const domainPts = (data.hdf_risk ? 15 : 0) + (data.pwf_risk ? 10 : 0) + (data.osf_risk ? 15 : 0)
+  const anomalyPts = (data.isoforest_anomaly ? 12 : 0) + (data.zscore_anomaly ? 8 : 0)
+  const preFloor = Math.min(mlPts + domainPts + anomalyPts, 100)
+  const floor = computeFloor(prob)
+  const floorApplied = preFloor < floor
+  return { prob, mlPts, domainPts, anomalyPts, preFloor, floor, floorApplied }
+}
+
+const ENGINEERED_FEATURE_LABELS = {
+  tool_wear_index:        'Tool Wear Index',
+  rpm_torque_ratio:       'RPM / Torque Ratio',
+  rpm_toolwear:           'RPM × Tool Wear',
+  temp_torque:            'Temp × Torque',
+  power_toolwear:         'Power × Tool Wear',
+  wear_remaining:         'Estimated Wear Remaining',
+  rpm_rolling_mean:       'RPM Rolling Mean',
+  torque_rolling_mean:    'Torque Rolling Mean',
+  tool_wear_rolling_mean: 'Tool Wear Rolling Mean',
+}
+
+function fmtNum(v) {
+  if (v === undefined || v === null) return '—'
+  return typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v
+}
+
+function stageDetailHtml(index, data, pipe) {
+  switch (index) {
+    case 0:
+      return `
+        <p class="text-xs text-gray-500 mb-3">Values read directly from the machine's sensors for this record.</p>
+        <div class="grid grid-cols-3 gap-3">
+          ${SENSOR_FIELDS.map(f => `
+            <div>
+              <p class="text-gray-500 text-xs">${SENSOR_LABELS[f] || f}</p>
+              <p class="text-gray-100 font-semibold">${fmtNum(data[f])} <span class="text-gray-500 text-xs">${SENSOR_UNITS[f] || ''}</span></p>
+            </div>`).join('')}
+        </div>`
+    case 1:
+      return `
+        <p class="text-xs text-gray-500 mb-3">Derived features engineered from the raw sensor readings above, used as model inputs.</p>
+        <div class="grid grid-cols-3 gap-3">
+          ${Object.keys(ENGINEERED_FEATURE_LABELS).filter(f => data[f] !== undefined && data[f] !== null).map(f => `
+            <div>
+              <p class="text-gray-500 text-xs">${ENGINEERED_FEATURE_LABELS[f]}</p>
+              <p class="text-gray-100 font-semibold">${fmtNum(data[f])}</p>
+            </div>`).join('')}
+        </div>`
+    case 2: {
+      const confPct = (Math.abs(pipe.prob - 0.5) * 200).toFixed(0) + '%'
+      return `
+        <p class="text-xs text-gray-500 mb-3">Random Forest classifier — predicts machine failure probability from engineered features.</p>
+        <div class="grid grid-cols-3 gap-4">
+          <div><p class="text-gray-500 text-xs">Failure Probability</p><p class="text-xl font-bold text-blue-400">${(pipe.prob * 100).toFixed(1)}%</p></div>
+          <div><p class="text-gray-500 text-xs">Contribution</p><p class="text-xl font-bold text-gray-100">${pipe.mlPts} / 50</p></div>
+          <div><p class="text-gray-500 text-xs">Model Confidence</p><p class="text-xl font-bold text-purple-400">${confPct}</p></div>
+        </div>`
+    }
+    case 3: {
+      const rules = [
+        { flag: data.hdf_risk, label: 'Heat Dissipation Failure', sub: 'low temp_diff + low rpm', pts: 15 },
+        { flag: data.pwf_risk, label: 'Power Failure Condition',  sub: 'power out of safe range', pts: 10 },
+        { flag: data.osf_risk, label: 'Overstrain Failure',       sub: 'tool_torque threshold exceeded', pts: 15 },
+      ]
+      const triggered = rules.filter(r => r.flag)
+      const list = triggered.length
+        ? triggered.map(r => `<li class="flex justify-between"><span>✓ ${r.label} <span class="text-gray-500 text-xs">(${r.sub})</span></span><span class="text-gray-400">+${r.pts}</span></li>`).join('')
+        : `<li class="text-gray-500">No domain rules triggered</li>`
+      return `
+        <p class="text-xs text-gray-500 mb-3">Engineering domain-knowledge rules based on known failure conditions.</p>
+        <ul class="text-sm text-gray-200 space-y-1.5 mb-3">${list}</ul>
+        <p class="text-gray-500 text-xs">Contribution: <span class="text-gray-200 font-semibold">${pipe.domainPts} / 30</span></p>`
+    }
+    case 4: {
+      const items = [
+        { flag: data.isoforest_anomaly, label: 'Isolation Forest', pts: 12 },
+        { flag: data.zscore_anomaly,    label: 'Z-Score (>3σ)',    pts: 8 },
+      ]
+      return `
+        <p class="text-xs text-gray-500 mb-3">Statistical outlier detection across the engineered feature space.</p>
+        <div class="grid grid-cols-2 gap-4 mb-3">
+          ${items.map(i => `
+            <div>
+              <p class="text-gray-500 text-xs">${i.label}</p>
+              <p class="font-semibold ${i.flag ? 'text-red-400' : 'text-green-400'}">${i.flag ? 'Anomaly Detected' : 'Normal'}</p>
+              <p class="text-gray-500 text-xs">${i.flag ? `+${i.pts} pts` : '+0 pts'}</p>
+            </div>`).join('')}
+        </div>
+        <p class="text-gray-500 text-xs">Contribution: <span class="text-gray-200 font-semibold">${pipe.anomalyPts} / 20</span></p>`
+    }
+    case 5:
+      return `
+        <p class="text-xs text-gray-500 mb-3">Risk-policy floor — guarantees a minimum score for high failure-probability records, regardless of rule/anomaly signal count.</p>
+        <div class="grid grid-cols-4 gap-4 mb-3">
+          <div><p class="text-gray-500 text-xs">Probability</p><p class="font-bold text-gray-100">${(pipe.prob * 100).toFixed(1)}%</p></div>
+          <div><p class="text-gray-500 text-xs">Minimum Score</p><p class="font-bold text-gray-100">${pipe.floor || '—'}</p></div>
+          <div><p class="text-gray-500 text-xs">Original</p><p class="font-bold text-gray-100">${pipe.preFloor}</p></div>
+          <div><p class="text-gray-500 text-xs">Adjusted</p><p class="font-bold ${pipe.floorApplied ? 'text-yellow-400' : 'text-gray-400'}">${pipe.floorApplied ? pipe.floor + ' ✓' : 'No change'}</p></div>
+        </div>
+        ${pipe.floorApplied ? `<p class="text-yellow-300 text-xs bg-yellow-950 border border-yellow-800 rounded px-3 py-2">Score raised from ${pipe.preFloor} to ${pipe.floor} because a ${(pipe.prob * 100).toFixed(0)}% failure probability guarantees this minimum risk level.</p>` : ''}`
+    case 6: {
+      const state = machineState(data.risk_level, data.alert_status)
+      const lc = levelColor[data.risk_level] || { text: 'text-gray-300' }
+      const primaryReason = (data.reasons || '').split('|')[0].trim() || 'No dominant risk signal identified.'
+      return `
+        <p class="text-xs text-gray-500 mb-3">Final output of the Risk Engine for this record.</p>
+        <div class="grid grid-cols-3 gap-4 mb-4">
+          <div><p class="text-gray-500 text-xs">Risk Score</p><p class="text-xl font-bold text-gray-100">${data.risk_score} / 100</p></div>
+          <div><p class="text-gray-500 text-xs">Risk Level</p><p class="text-xl font-bold ${lc.text}">${data.risk_level}</p></div>
+          <div><p class="text-xl font-bold ${state.cls}">${state.text}</p></div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-3 mb-3">
+          <p class="text-gray-500 text-xs mb-1">Recommended Action</p>
+          <p class="text-gray-100 font-medium">${data.action}</p>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-3">
+          <p class="text-gray-500 text-xs mb-1">Why</p>
+          <p class="text-gray-300 text-sm">${primaryReason}</p>
+        </div>`
+    }
+    case 7: {
+      const reasons = pipelineTopReasons(data.shap)
+      return `
+        <p class="text-xs text-gray-500 mb-2">Top Features</p>
+        <p class="text-sm text-gray-300 mb-3">The model predicted <span class="font-semibold text-gray-100">${data.risk_level} Risk</span> because:</p>
+        <ul class="text-sm text-gray-100 space-y-1 mb-4 list-disc list-inside">
+          ${reasons.map(r => `<li>${r}</li>`).join('')}
+        </ul>
+        <button onclick="document.getElementById('shapSection').scrollIntoView({behavior:'smooth', block:'center'})"
+          class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          View Full SHAP Plot ↓
+        </button>`
+    }
+  }
+}
+
+function renderStepper(activeIndex) {
+  const container = document.getElementById('pipelineStepper')
+  container.innerHTML = PIPELINE_STAGES.map((s, i) => `
+    <div class="flex items-center ${i < PIPELINE_STAGES.length - 1 ? 'flex-1' : ''}">
+      <button onclick="selectStage(${i})" class="flex flex-col items-center gap-2 group shrink-0">
+        <div class="w-9 h-9 rounded-full flex items-center justify-center border-2 transition-colors
+          ${i === activeIndex ? 'bg-blue-600 border-blue-400 text-white' : 'bg-gray-700 border-gray-600 text-gray-300 group-hover:border-gray-400'}">
+          ${getStageIcon(i)}
+        </div>
+        <span class="text-[11px] text-center leading-tight whitespace-nowrap ${i === activeIndex ? 'text-blue-300 font-semibold' : 'text-gray-500'}">${s.label}</span>
+      </button>
+      ${i < PIPELINE_STAGES.length - 1 ? `<div class="flex-1 h-0.5 mx-1 ${i < activeIndex ? 'bg-blue-500' : 'bg-gray-700'}"></div>` : ''}
+    </div>`).join('')
+}
+
+function selectStage(index) {
+  activeStageIndex = index
+  renderStepper(activeStageIndex)
+  document.getElementById('pipelineDetail').innerHTML =
+    `<h3 class="font-semibold text-gray-100 mb-3">${PIPELINE_STAGES[index].label}</h3>` +
+    stageDetailHtml(index, pipelineData, computePipeline(pipelineData))
+}
+
+function getStageIcon(index) {
+  const icons = [
+    '<polyline points="1,8 4,8 6,3 8,13 10,5 12,11 15,8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    '<rect x="2" y="2" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="2" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2" y="9" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.3"/>',
+    '<rect x="2" y="8" width="3" height="6" fill="currentColor"/><rect x="6.5" y="4" width="3" height="10" fill="currentColor"/><rect x="11" y="6" width="3" height="8" fill="currentColor"/>',
+    '<rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><polyline points="4.5,8 6.5,10 11,5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>',
+    '<polygon points="8,2 15,14 1,14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><line x1="8" y1="6.3" x2="8" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="11.8" r="0.8" fill="currentColor"/>',
+    '<path d="M8 1 L14 3 V8 C14 12 11 14.5 8 15 C5 14.5 2 12 2 8 V3 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
+    '<circle cx="8" cy="8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.4"/><polyline points="5,8 7,10.5 11,5.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>',
+    '<circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="10" y1="10" x2="14" y2="14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
+  ]
+  return `<svg viewBox="0 0 16 16" class="w-4 h-4">${icons[index]}</svg>`
+}
+
+const PIPELINE_FEATURE_LABELS = {
+  hdf_risk: 'Heat Dissipation Risk', pwf_risk: 'Power Failure Risk', osf_risk: 'Overstrain Risk',
+  rpm: 'Rotational Speed', torque: 'Torque', tool_wear: 'Tool Wear',
+  temp_diff: 'Temperature Differential', power: 'Power Output', tool_torque: 'Tool-Torque Interaction',
+  rpm_torque_ratio: 'RPM-to-Torque Ratio', air_temp: 'Air Temperature', process_temp: 'Process Temperature'
+}
+
+function pipelineTopReasons(shapList) {
+  if (!shapList || shapList.length === 0) return ['No dominant factors identified.']
+  return shapList.slice(0, 3).map(s => {
+    const label     = PIPELINE_FEATURE_LABELS[s.top_feature] || s.top_feature
+    const direction = s.top_shap_value >= 0 ? 'Elevated' : 'Reduced'
+    return `${direction} ${label}`
+  })
+}
+
+function renderScoreBuildup(pipe, data) {
+  const chip = (label, delta, running) => `
+    <span class="bg-gray-900 border border-gray-700 rounded-full px-3 py-1 text-gray-300">
+      ${label} <span class="text-gray-500">+${delta}</span> <span class="text-gray-600">→</span> <span class="text-gray-100 font-semibold">${running}</span>
+    </span>`
+  const arrow = '<span class="text-gray-600">→</span>'
+
+  let html = chip('ML', pipe.mlPts, pipe.mlPts) + arrow
+  html += chip('Rules', pipe.domainPts, pipe.mlPts + pipe.domainPts) + arrow
+  html += chip('Anomaly', pipe.anomalyPts, pipe.preFloor)
+
+  if (pipe.floorApplied) {
+    html += arrow + `<span class="bg-yellow-950 border border-yellow-800 rounded-full px-3 py-1 text-yellow-300">Safety Floor <span class="text-yellow-500">${pipe.preFloor}→${pipe.floor}</span></span>`
+  }
+
+  html += arrow + `<span class="bg-blue-950 border border-blue-700 rounded-full px-3 py-1 text-blue-300 font-semibold">Final ${data.risk_score}</span>`
+
+  document.getElementById('scoreBuildup').innerHTML = html
+}
+
+function renderPipelineSummarySentence(data) {
+  const el = document.getElementById('pipelineSummarySentence')
+  const signals = []
+  if (data.hdf_risk || data.pwf_risk || data.osf_risk) signals.push('rule-based analysis')
+  if (data.isoforest_anomaly || data.zscore_anomaly) signals.push('anomaly detection models')
+
+  let sentence = `This record was classified as <span class="font-semibold ${levelColor[data.risk_level]?.text || 'text-gray-200'}">${data.risk_level} Risk</span> after combining the Random Forest classifier prediction (${(data.pred_prob * 100).toFixed(1)}%)`
+  if (signals.length) sentence += `, real-time ${signals.join(' and ')}`
+  if (computePipeline(data).floorApplied) sentence += `, and a probability safety floor adjustment`
+  sentence += '.'
+
+  el.innerHTML = sentence
+}
+
+function buildWhySentence(data) {
+  const parts = [`Failure probability reached ${(data.pred_prob * 100).toFixed(1)}%`]
+  if (data.hdf_risk) parts.push('Heat Dissipation Failure risk detected')
+  if (data.pwf_risk) parts.push('Power Failure risk verified')
+  if (data.osf_risk) parts.push('Overstrain Failure threshold exceeded')
+  if (data.isoforest_anomaly || data.zscore_anomaly) parts.push('statistical sensor anomalies flagged')
+  return parts.join('. ') + `. Aggregated Risk Score finalized at ${data.risk_score}/100.`
+}
+
+function formatResolvedTimestamp(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts + 'Z')
+  if (isNaN(d.getTime())) return ts
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  })
+}
+
+function renderResolutionCard(data) {
+  const card = document.getElementById('resolutionCard')
+  const isClosed = data.alert_status === 'RESOLVED' || data.alert_status === 'FALSE_POSITIVE'
+
+  if (!isClosed) {
+    card.classList.add('hidden')
+    return
+  }
+
+  card.classList.remove('hidden')
+  document.getElementById('resolvedBy').textContent   = data.resolved_by || '—'
+  document.getElementById('resolvedAt').textContent   = formatResolvedTimestamp(data.resolved_at)
+  document.getElementById('resolutionNote').textContent =
+    data.resolution_note && data.resolution_note.trim()
+      ? data.resolution_note
+      : (data.alert_status === 'FALSE_POSITIVE' ? 'No note provided — marked as false positive.' : 'No note provided.')
+}
+
+function renderPipeline(data) {
+  pipelineData = data
+  renderScoreBuildup(computePipeline(data), data)
+  selectStage(activeStageIndex)
+}
+
+function confidenceScore(prob) {
+  const score = Math.abs(prob - 0.5) * 2
+  const pct   = (score * 100).toFixed(0) + '%'
+  let label
+  if (score >= 0.8)      label = 'Very High'
+  else if (score >= 0.6) label = 'High'
+  else if (score >= 0.4) label = 'Medium'
+  else                   label = 'Low'
+  return { pct, label }
+}
+
+function parseFailureBadges(data) {
+  const flags = [
+    { key: 'hdf_risk', label: 'HDF', full: 'Heat Dissipation Failure', cls: 'bg-red-900 text-red-300 border border-red-700' },
+    { key: 'pwf_risk', label: 'PWF', full: 'Power Failure',             cls: 'bg-orange-900 text-orange-300 border border-orange-700' },
+    { key: 'osf_risk', label: 'OSF', full: 'Overstrain Failure',        cls: 'bg-purple-900 text-purple-300 border border-purple-700' },
+  ]
+  const found = flags.filter(f => data[f.key] === 1)
+  if (found.length === 0) return '<span class="text-gray-500 text-sm">None detected</span>'
+  return found.map(f =>
+    `<span class="text-xs font-semibold px-2 py-1 rounded-full ${f.cls}">${f.label} — ${f.full}</span>`
+  ).join('')
+}
+
+async function load() {
+  const data = await fetch(`/api/record/${RECORD_ID}`).then(r => r.json())
+  if (data.error) {
+    document.querySelector('main').innerHTML =
+      `<p class="text-red-400 text-center mt-20 text-lg">Record #${RECORD_ID} not found.</p>`
+    return
+  }
+
+  currentRiskLevel  = data.risk_level
+  currentAssignedTo = data.assigned_to || null
+
+  if (CURRENT_USER.role === 'admin' && technicianList.length === 0) {
+    technicianList = await fetch('/api/technicians').then(r => r.json())
+  }
+
+  const lc = levelColor[data.risk_level] || { text: 'text-gray-300', bg: 'bg-gray-700' }
+  document.getElementById('headerBadge').className =
+    `text-sm font-bold px-4 py-2 rounded-full ${lc.bg} ${lc.text}`
+  document.getElementById('headerBadge').textContent = data.risk_level + ' Risk'
+
+  document.getElementById('predProb').textContent  = (data.pred_prob * 100).toFixed(1) + '%'
+  document.getElementById('riskScore').textContent = data.risk_score + '/100'
+
+  const conf = confidenceScore(data.pred_prob)
+  document.getElementById('confidence').textContent      = conf.pct
+  document.getElementById('confidenceLabel').textContent = conf.label + ' confidence'
+
+  const stateBadge = stateBadgeStyle(data.risk_level, data.alert_status)
+  document.getElementById('alertStatusBadge').className   = 'text-sm font-bold px-4 py-2 rounded-full ' + stateBadge.cls
+  document.getElementById('alertStatusBadge').textContent = stateBadge.text
+
+  const floorDetail = document.getElementById('riskScoreTooltipDetail')
+  if (data.override_applied) {
+    const floorReason = (data.reasons || '')
+      .split('|')
+      .map(r => r.trim())
+      .find(r => r.toLowerCase().includes('safety floor'))
+    floorDetail.textContent = floorReason
+      ? floorReason
+      : `Probability safety floor applied for this record (${(data.pred_prob * 100).toFixed(0)}% failure probability).`
+  } else {
+    floorDetail.textContent =
+      `No floor adjustment needed — accumulated signal points already met the risk level for a ${(data.pred_prob * 100).toFixed(0)}% failure probability.`
+  }
+
+  const PRIORITY_MAP = {
+    Critical: { text: 'Critical', cls: 'text-red-400',    window: 'Immediate' },
+    High:     { text: 'High',     cls: 'text-orange-400', window: 'Within 4 Hours' },
+    Medium:   { text: 'Medium',   cls: 'text-yellow-400', window: 'Within 24 Hours' },
+    Low:      { text: 'Low',      cls: 'text-green-400',  window: 'Routine Schedule' }
+  }
+
+  const FEATURE_LABELS = {
+    hdf_risk:         'Heat Dissipation Risk',
+    pwf_risk:         'Power Failure Risk',
+    osf_risk:         'Overstrain Risk',
+    rpm:               'Rotational Speed',
+    torque:            'Torque',
+    tool_wear:         'Tool Wear',
+    temp_diff:         'Temperature Differential',
+    power:             'Power Output',
+    tool_torque:       'Tool-Torque Interaction',
+    rpm_torque_ratio:  'RPM-to-Torque Ratio',
+    air_temp:          'Air Temperature',
+    process_temp:      'Process Temperature'
+  }
+
+  function businessReasons(shapList) {
+    if (!shapList || shapList.length === 0) return '<li class="text-gray-500">No dominant factors identified.</li>'
+    const numerals = ['①','②','③']
+    return shapList.slice(0, 3).map((s, i) => {
+      const label     = FEATURE_LABELS[s.top_feature] || s.top_feature
+      const direction = s.top_shap_value >= 0 ? 'Elevated' : 'Reduced'
+      return `<li>${numerals[i] || '•'} ${direction} ${label}</li>`
+    }).join('')
+  }
+
+  const pr = PRIORITY_MAP[data.risk_level] || { text: '—', cls: 'text-gray-300', window: '—' }
+  document.getElementById('priority').className = 'font-bold text-lg ' + pr.cls
+  document.getElementById('priority').textContent = pr.text
+  document.getElementById('inspectionWindow').textContent = pr.window
+
+  document.getElementById('action').textContent         = data.action || '—'
+  document.getElementById('shapExplanation').textContent = buildWhySentence(data)
+  document.getElementById('failureBadges').innerHTML = parseFailureBadges(data)
+  document.getElementById('businessExplanation').innerHTML = businessReasons(data.shap)
+
+  const grid = document.getElementById('sensorGrid')
+  grid.innerHTML = ''
+  SENSOR_FIELDS.forEach(field => {
+    if (data[field] === undefined || data[field] === null) return
+    const unit  = SENSOR_UNITS[field] || ''
+    const label = SENSOR_LABELS[field] || field
+    const val   = typeof data[field] === 'number'
+      ? (Number.isInteger(data[field]) ? data[field] : data[field].toFixed(2))
+      : data[field]
+    const status = sensorStatus(field, data)
+    const statusHtml = status
+      ? `<p class="text-xs mt-1 ${status.cls}">${status.icon} ${status.label}</p>`
+      : ''
+    grid.innerHTML += `
+      <div class="bg-gray-900 rounded-lg p-4">
+        <p class="text-gray-400 text-xs mb-1">${label}</p>
+        <p class="text-xl font-bold text-gray-100">${val}<span class="text-gray-500 text-sm ml-1">${unit}</span></p>
+        ${statusHtml}
+      </div>`
+  })
+
+  if (data.shap && data.shap.length > 0) {
+    const rawFeatures  = data.shap.map(s => s.top_feature)
+    const bizLabels    = rawFeatures.map(f => FEATURE_LABELS[f] || f)
+    const values       = data.shap.map(s => parseFloat(s.top_shap_value))
+    const colors       = values.map(v => v >= 0 ? '#ef4444' : '#60a5fa')
+
+    new Chart(document.getElementById('shapChart'), {
+      type: 'bar',
+      data: {
+        labels: bizLabels,
+        datasets: [{
+          label: 'SHAP Value',
+          data: values,
+          backgroundColor: colors,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: ctx => bizLabels[ctx[0].dataIndex],
+              label: ctx => [
+                'Feature: ' + rawFeatures[ctx.dataIndex],
+                'SHAP: ' + ctx.raw.toFixed(4)
+              ]
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#6b7280' }, grid: { color: '#374151' } },
+          y: { ticks: { color: '#d1d5db' }, grid: { color: '#374151' } }
+        }
+      }
+    })
+  }
+
+  renderPipeline(data)
+  renderPipelineSummarySentence(data)
+  renderStatusButtons(data.alert_status, currentAssignedTo)
+  renderResolutionCard(data)
+  loadHistory()
+}
+
+function renderStatusButtons(currentStatus, assignedTo) {
+  const container = document.getElementById('statusButtons')
+  const isAdmin = CURRENT_USER.role === 'admin'
+  const isMine  = assignedTo === CURRENT_USER.username
+  const closed  = (currentStatus === 'RESOLVED' || currentStatus === 'FALSE_POSITIVE')
+
+  if (closed) {
+    if (isAdmin) {
+      container.innerHTML = `
+        <span class="text-gray-500 text-xs mr-2">Alert closed —</span>
+        <button onclick="updateStatus('OPEN')"
+          class="bg-gray-600 hover:bg-gray-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          Reopen Alert
+        </button>`
+    } else {
+      container.innerHTML = `<span class="text-gray-500 text-xs">Alert closed — no further action needed</span>`
+    }
+    return
+  }
+
+  if (currentRiskLevel === 'Low' || currentRiskLevel === 'Medium') {
+    if (currentStatus === 'OK') {
+      container.innerHTML = `<span class="text-gray-500 text-xs">No active alert — monitoring only</span>`
+    } else {
+      container.innerHTML = `
+        <button onclick="updateStatus('OK')"
+          class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          Reset to OK
+        </button>`
+    }
+    return
+  }
+
+  let html = ''
+
+  if (isAdmin) {
+    const options = technicianList.map(t =>
+      `<option value="${t}" ${t === assignedTo ? 'selected' : ''}>${t}</option>`
+    ).join('')
+    html += `
+      <div class="flex gap-2 items-center mr-4">
+        <select id="assignSelectDetail" class="bg-gray-700 text-white text-sm rounded px-2 py-2">
+          <option value="">-- assign to --</option>
+          ${options}
+        </select>
+        <button onclick="assignFromDetail()"
+          class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          ${assignedTo ? 'Reassign' : 'Assign'}
+        </button>
+      </div>`
+  }
+
+  if (!isAdmin && !assignedTo && currentStatus === 'OPEN') {
+    html += `
+      <button onclick="claimFromDetail()"
+        class="bg-purple-700 hover:bg-purple-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+        Claim Alert
+      </button>`
+  }
+
+  if (isAdmin || isMine) {
+    if (currentStatus === 'OPEN' || currentStatus === 'ASSIGNED') {
+      html += `
+        <button onclick="updateStatus('IN_PROGRESS')"
+          class="bg-yellow-700 hover:bg-yellow-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          Start Work
+        </button>`
+    }
+    if (currentStatus === 'IN_PROGRESS') {
+      html += `
+        <button onclick="updateStatus('RESOLVED')"
+          class="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          Resolve
+        </button>`
+    }
+    html += `
+      <button onclick="updateStatus('FALSE_POSITIVE')"
+        class="bg-gray-600 hover:bg-gray-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+        Mark as False Positive
+      </button>`
+  }
+
+  container.innerHTML = html || `<span class="text-gray-500 text-xs">No actions available for you on this alert.</span>`
+}
+
+async function claimFromDetail() {
+  const res = await fetch(`/api/assign/${RECORD_ID}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  const data = await res.json()
+  if (res.ok) {
+    currentAssignedTo = data.assigned_to
+    onAssignmentOrStatusChange(data.alert_status)
+    showToast(`✅ You claimed this alert`, currentRiskLevel ? currentRiskLevel.toLowerCase() : 'info')
+  } else {
+    alert('Claim failed: ' + data.error)
+  }
+}
+
+async function assignFromDetail() {
+  const select = document.getElementById('assignSelectDetail')
+  const technician = select.value
+  if (!technician) { alert('Please select a technician.'); return }
+
+  const res = await fetch(`/api/assign/${RECORD_ID}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ technician })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    currentAssignedTo = data.assigned_to
+    onAssignmentOrStatusChange(data.alert_status)
+    showToast(`✅ Assigned to ${data.assigned_to}`, currentRiskLevel ? currentRiskLevel.toLowerCase() : 'info')
+  } else {
+    alert('Assign failed: ' + data.error)
+  }
+}
+
+function onAssignmentOrStatusChange(status) {
+  const stateBadge = stateBadgeStyle(currentRiskLevel, status)
+  document.getElementById('alertStatusBadge').className   = 'text-sm font-bold px-4 py-2 rounded-full ' + stateBadge.cls
+  document.getElementById('alertStatusBadge').textContent = stateBadge.text
+  renderStatusButtons(status, currentAssignedTo)
+  loadHistory()
+
+  fetch(`/api/record/${RECORD_ID}`).then(r => r.json()).then(renderResolutionCard)
+
+  if (pipelineData) {
+    pipelineData.alert_status = status
+    selectStage(activeStageIndex)
+    renderPipelineSummarySentence(pipelineData)
+  }
+}
+
+const HISTORY_ACTION_STYLE = {
+  ASSIGN_ALERT:  { icon: '👤', dot: 'bg-blue-500',   label: 'Assigned' },
+  UPDATE_ALERT:  { icon: '🔄', dot: 'bg-yellow-500', label: 'Status Changed' },
+}
+
+function formatHistoryTimestamp(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts + 'Z')
+  if (isNaN(d.getTime())) return ts
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  })
+}
+
+async function loadHistory() {
+  const container   = document.getElementById('historyTimeline')
+  const assigneeBox = document.getElementById('currentAssigneeBox')
+  try {
+    const rows = await fetch(`/api/record/${RECORD_ID}/history`).then(r => r.json())
+
+    const lastAssign = [...rows].reverse().find(r => r.action === 'ASSIGN_ALERT')
+    if (currentAssignedTo && lastAssign) {
+      assigneeBox.innerHTML = `
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-blue-900 border border-blue-600 flex items-center justify-center text-blue-300 font-bold">
+            ${currentAssignedTo.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <p class="text-gray-100 font-semibold">${currentAssignedTo} <span class="text-gray-500 text-xs font-normal">(Technician)</span></p>
+            <p class="text-gray-500 text-xs">Assigned by ${lastAssign.username} · ${formatHistoryTimestamp(lastAssign.timestamp)}</p>
+          </div>
+        </div>`
+    } else if (currentAssignedTo) {
+      assigneeBox.innerHTML = `<p class="text-gray-100 font-semibold">${currentAssignedTo}</p>`
+    } else {
+      assigneeBox.innerHTML = `<p class="text-gray-500 text-sm">Unassigned — no technician has claimed this alert yet.</p>`
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      container.innerHTML = `<p class="text-gray-500 text-sm">No assignment or status history yet.</p>`
+      return
+    }
+
+    container.innerHTML = rows.map((row, i) => {
+      const style = HISTORY_ACTION_STYLE[row.action] || { icon: '•', dot: 'bg-gray-500', label: row.action }
+      const isLast = i === rows.length - 1
+      return `
+        <div class="flex gap-3">
+          <div class="flex flex-col items-center">
+            <div class="w-3 h-3 rounded-full ${style.dot} shrink-0 mt-1"></div>
+            ${!isLast ? '<div class="w-px flex-1 bg-gray-700 mt-1"></div>' : ''}
+          </div>
+          <div class="pb-4">
+            <p class="text-sm text-gray-200">
+              <span class="font-semibold">${style.label}</span>
+              <span class="text-gray-500">by</span>
+              <span class="text-blue-300 font-medium">${row.username}</span>
+            </p>
+            <p class="text-xs text-gray-500 mt-0.5">${formatHistoryTimestamp(row.timestamp)}</p>
+            ${row.details && row.details !== '-' ? `<p class="text-xs text-gray-400 mt-1 font-mono">${row.details}</p>` : ''}
+          </div>
+        </div>`
+    }).join('')
+  } catch (e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load history.</p>`
+  }
+}
+
+async function updateStatus(status) {
+  const res = await fetch(`/api/update_status/${RECORD_ID}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ status })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    onAssignmentOrStatusChange(status)
+    const msg = document.getElementById('updateMsg')
+    msg.classList.remove('hidden')
+    setTimeout(() => msg.classList.add('hidden'), 3000)
+
+    const level = currentRiskLevel ? currentRiskLevel.toLowerCase() : 'info'
+    showToast(`✅ Record #${RECORD_ID} (${currentRiskLevel}) marked as ${status.replace('_',' ')}`, level)
+  } else {
+    alert('Update failed: ' + data.error)
+  }
+}
+
+document.getElementById('riskScoreInfoBtn').addEventListener('click', (e) => {
+  e.stopPropagation()
+  document.getElementById('riskScoreTooltip').classList.toggle('hidden')
+})
+document.addEventListener('click', (e) => {
+  const tip = document.getElementById('riskScoreTooltip')
+  const btn = document.getElementById('riskScoreInfoBtn')
+  if (!tip.contains(e.target) && e.target !== btn) tip.classList.add('hidden')
+})
+
+load()
+</script>
+{% endblock %}
