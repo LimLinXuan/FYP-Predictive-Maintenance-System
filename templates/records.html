@@ -51,7 +51,7 @@
     class="text-gray-400 hover:text-white text-sm font-bold px-1.5 transition-colors" title="Clear date range">✕</button>
   </div>
 
-  <select id="limitSelect" onchange="loadRecords()"
+  <select id="limitSelect" onchange="handlePageSizeChange()"
     class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
     <option value="50">50 records</option>
     <option value="100">100 records</option>
@@ -73,7 +73,6 @@
         <th class="text-left py-2 pr-4">Score</th>
         <th class="text-left py-2 pr-4">Probability</th>
         <th class="text-left py-2 pr-4">Confidence</th>
-        <!-- 變更處 2: 表頭改為 Machine State -->
         <th class="text-left py-2 pr-4">Machine State</th>
         <th class="text-left py-2">Actions</th>
       </tr>
@@ -81,6 +80,12 @@
     <tbody id="recordTable"></tbody>
   </table>
   <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No records match this filter.</p>
+
+  <!-- Pagination Controls -->
+  <div id="paginationBar" class="flex flex-col sm:flex-row justify-between items-center gap-4 mt-6 pt-4 border-t border-gray-700 text-sm text-gray-400">
+    <div id="pageInfo">Showing 0–0 of 0 records</div>
+    <div class="flex items-center gap-1" id="paginationBtns"></div>
+  </div>
 </div>
 
 <style>
@@ -100,6 +105,12 @@ const statusColor = {
   RESOLVED:'text-green-400', FALSE_POSITIVE:'text-gray-400'
 }
 const statusOrder = ['OPEN','IN_PROGRESS','RESOLVED','FALSE_POSITIVE']
+
+let currentLevel = 'ALL'
+let currentData  = []
+let filteredData = []
+let currentPage  = 1
+let pageSize     = 50
 
 function machineState(row) {
   if (row.alert_status === 'OK') {
@@ -132,16 +143,19 @@ function scoreBarColor(score) {
   return 'bg-green-500'
 }
 
-let currentLevel = 'ALL'
-let currentData  = []
-
 async function loadRecords() {
-  const limit = document.getElementById('limitSelect').value
   const url = currentLevel === 'ALL'
-    ? `/api/records?limit=${limit}`
-    : `/api/records?limit=${limit}&level=${currentLevel}`
+    ? `/api/records?limit=10000`
+    : `/api/records?limit=10000&level=${currentLevel}`
   currentData = await fetch(url).then(r => r.json())
+  currentPage = 1
   applyFilters()
+}
+
+function handlePageSizeChange() {
+  pageSize = parseInt(document.getElementById('limitSelect').value)
+  currentPage = 1
+  renderCurrentPage()
 }
 
 function getFailureLabel(r) {
@@ -197,7 +211,9 @@ function applyFilters() {
     filtered = filtered.filter(r => r.timestamp && r.timestamp.slice(0, 10) <= dateTo)
   }
 
-  renderTable(filtered)
+  filteredData = filtered
+  currentPage = 1
+  renderCurrentPage()
 }
 
 function clearDateRange() {
@@ -212,6 +228,81 @@ function setLevel(level) {
   document.getElementById(`lvl-${level}`).classList.add('active')
   currentLevel = level
   loadRecords()
+}
+
+function goToPage(page) {
+  currentPage = page
+  renderCurrentPage()
+}
+
+function renderCurrentPage() {
+  const total = filteredData.length
+  const totalPages = Math.ceil(total / pageSize) || 1
+
+  if (currentPage > totalPages) currentPage = totalPages
+  if (currentPage < 1) currentPage = 1
+
+  const startIdx = (currentPage - 1) * pageSize
+  const endIdx   = Math.min(startIdx + pageSize, total)
+  const pageRows = filteredData.slice(startIdx, endIdx)
+
+  renderTable(pageRows)
+  renderPagination(total, totalPages, startIdx, endIdx)
+}
+
+function renderPagination(total, totalPages, startIdx, endIdx) {
+  const info = document.getElementById('pageInfo')
+  const btns = document.getElementById('paginationBtns')
+
+  if (total === 0) {
+    info.textContent = 'Showing 0–0 of 0 records'
+    btns.innerHTML = ''
+    return
+  }
+
+  info.textContent = `Showing ${(startIdx + 1).toLocaleString()}–${endIdx.toLocaleString()} of ${total.toLocaleString()} records`
+
+  let html = ''
+
+  // Previous Button
+  if (currentPage > 1) {
+    html += `<button onclick="goToPage(${currentPage - 1})" class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">← Previous</button>`
+  } else {
+    html += `<button disabled class="px-2.5 py-1 bg-gray-800 text-gray-600 rounded cursor-not-allowed">← Previous</button>`
+  }
+
+  // Page Numbers with Ellipsis
+  const pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages.push(1)
+    if (currentPage > 3) pages.push('...')
+    const start = Math.max(2, currentPage - 1)
+    const end = Math.min(totalPages - 1, currentPage + 1)
+    for (let i = start; i <= end; i++) pages.push(i)
+    if (currentPage < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  pages.forEach(p => {
+    if (p === '...') {
+      html += `<span class="px-2 text-gray-500">…</span>`
+    } else if (p === currentPage) {
+      html += `<button class="px-3 py-1 bg-blue-600 text-white rounded font-bold">${p}</button>`
+    } else {
+      html += `<button onclick="goToPage(${p})" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">${p}</button>`
+    }
+  })
+
+  // Next Button
+  if (currentPage < totalPages) {
+    html += `<button onclick="goToPage(${currentPage + 1})" class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">Next →</button>`
+  } else {
+    html += `<button disabled class="px-2.5 py-1 bg-gray-800 text-gray-600 rounded cursor-not-allowed">Next →</button>`
+  }
+
+  btns.innerHTML = html
 }
 
 function renderTable(data) {
@@ -250,7 +341,6 @@ function renderTable(data) {
         <span class="${confClass(row.pred_prob)}">${confLabel(row.pred_prob)}</span>
         <span class="text-gray-500 text-xs ml-1">${confPct(row.pred_prob)}</span>
       </td>
-      <!-- 變更處 3: 修改表格單元格以呈現 Machine State -->
       <td class="py-3 pr-4" id="status-${row.record_id}">
         <span class="${machineState(row).cls} font-semibold text-xs">${machineState(row).text}</span>
       </td>
@@ -302,7 +392,6 @@ async function updateStatus(id, status) {
     const level  = record ? record.risk_level.toLowerCase() : 'info'
     if (record) record.alert_status = status
 
-    // 變更處 4: 同步更新動態變更狀態時的渲染邏輯
     const stateObj = machineState({ risk_level: record ? record.risk_level : '', alert_status: status })
     document.getElementById(`status-${id}`).innerHTML =
       `<span class="${stateObj.cls} font-semibold text-xs">${stateObj.text}</span>`

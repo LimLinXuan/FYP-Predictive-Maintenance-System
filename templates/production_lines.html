@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex justify-between items-center mb-2">
+  <h1 class="text-2xl font-bold">Production Lines</h1>
+</div>
+<p class="text-gray-400 text-sm mb-6">
+  Simulated production-line groupings for asset management demonstration.
+  <span class="text-gray-500">Not derived from the AI4I dataset.</span>
+</p>
+
+<!-- Summary cards -->
+<div class="grid grid-cols-4 gap-4 mb-8" id="summaryCards">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Total Lines</p>
+    <p class="text-3xl font-bold mt-1" id="s_totalLines">—</p>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Total Assets</p>
+    <p class="text-3xl font-bold mt-1" id="s_totalAssets">—</p>
+  </div>
+  <div class="bg-green-950 border border-green-800 rounded-xl p-5">
+    <p class="text-green-300 text-sm">Running</p>
+    <p class="text-3xl font-bold mt-1 text-green-400" id="s_running">—</p>
+  </div>
+  <div class="bg-red-950 border border-red-800 rounded-xl p-5">
+    <p class="text-red-300 text-sm">Down / Warning</p>
+    <p class="text-3xl font-bold mt-1 text-red-400" id="s_downWarning">—</p>
+  </div>
+</div>
+
+<!-- Production line cards -->
+<div class="grid grid-cols-2 gap-5" id="lineGrid">
+  <p class="text-gray-500 text-sm col-span-2">Loading production lines...</p>
+</div>
+
+<style>
+  .line-status-dot { width: 10px; height: 10px; border-radius: 9999px; display: inline-block; }
+</style>
+
+<script>
+const LINE_STATUS_COLOR = {
+  RUNNING: 'text-green-400',
+  WARNING: 'text-yellow-400',
+  DOWN:    'text-red-400'
+}
+const LINE_STATUS_DOT = {
+  RUNNING: 'bg-green-500',
+  WARNING: 'bg-yellow-500',
+  DOWN:    'bg-red-500'
+}
+const ASSET_STATUS_COLOR = {
+  RUNNING:     'bg-green-900 text-green-300 border border-green-700',
+  WARNING:     'bg-yellow-900 text-yellow-300 border border-yellow-700',
+  MAINTENANCE: 'bg-orange-900 text-orange-300 border border-orange-700',
+  DOWN:        'bg-red-900 text-red-300 border border-red-700'
+}
+
+function renderLineCard(line) {
+  const counts = line.status_counts || {}
+  const running     = counts.RUNNING || 0
+  const warning     = counts.WARNING || 0
+  const maintenance = counts.MAINTENANCE || 0
+  const down        = counts.DOWN || 0
+
+  const badges = [
+    ['RUNNING', running],
+    ['WARNING', warning],
+    ['MAINTENANCE', maintenance],
+    ['DOWN', down],
+  ].filter(([, count]) => count > 0)
+   .map(([status, count]) => `
+      <span class="text-xs font-semibold px-2 py-1 rounded-full ${ASSET_STATUS_COLOR[status]}">
+        ${count} ${status}
+      </span>`
+   ).join('')
+
+  return `
+    <a href="/production-lines/${line.line_id}"
+       class="bg-gray-800 hover:bg-gray-750 border border-gray-800 hover:border-gray-700 rounded-xl p-5 transition-colors block">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="line-status-dot ${LINE_STATUS_DOT[line.status] || 'bg-gray-600'}"></span>
+          <h2 class="font-mono font-bold text-lg">${line.line_id}</h2>
+        </div>
+        <span class="text-sm font-semibold ${LINE_STATUS_COLOR[line.status] || 'text-gray-400'}">${line.status}</span>
+      </div>
+      <p class="text-gray-200 font-medium mb-1">${line.line_name}</p>
+      <p class="text-gray-500 text-xs mb-4">${line.location || '—'}</p>
+      <div class="flex items-center justify-between">
+        <p class="text-gray-400 text-sm">${line.asset_count} asset${line.asset_count === 1 ? '' : 's'}</p>
+        <div class="flex gap-1.5 flex-wrap justify-end">${badges || '<span class="text-gray-600 text-xs">No assets</span>'}</div>
+      </div>
+    </a>`
+}
+
+async function load() {
+  try {
+    const lines = await fetch('/api/production-lines').then(r => r.json())
+    if (lines.error) throw new Error(lines.error)
+
+    const totalAssets = lines.reduce((sum, l) => sum + l.asset_count, 0)
+    const running = lines.filter(l => l.status === 'RUNNING').length
+    const downWarning = lines.filter(l => l.status === 'DOWN' || l.status === 'WARNING').length
+
+    document.getElementById('s_totalLines').textContent   = lines.length
+    document.getElementById('s_totalAssets').textContent  = totalAssets
+    document.getElementById('s_running').textContent      = running
+    document.getElementById('s_downWarning').textContent  = downWarning
+
+    const grid = document.getElementById('lineGrid')
+    if (lines.length === 0) {
+      grid.innerHTML = `<p class="text-gray-500 text-sm col-span-2">No production lines found.</p>`
+      return
+    }
+    grid.innerHTML = lines.map(renderLineCard).join('')
+  } catch (err) {
+    console.error('Failed to load production lines:', err)
+    document.getElementById('lineGrid').innerHTML =
+      `<p class="text-red-400 text-sm col-span-2">Failed to load production lines.</p>`
+  }
+}
+
+load()
+</script>
+{% endblock %}

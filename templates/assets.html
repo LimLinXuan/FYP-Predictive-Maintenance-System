@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex justify-between items-center mb-2">
+  <h1 class="text-2xl font-bold">Assets</h1>
+</div>
+<p class="text-gray-400 text-sm mb-6">
+  Simulated asset registry mapping AI4I sensor observations to physical machines.
+  <span class="text-gray-500">Not derived from the AI4I dataset.</span>
+</p>
+
+<!-- Filters -->
+<div class="flex gap-3 mb-5 items-center flex-wrap">
+  <input type="text" id="searchBox" placeholder="Search asset ID, machine, type..."
+    oninput="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-1.5 w-64 placeholder-gray-500">
+
+  <select id="lineFilter" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="ALL">All Lines</option>
+  </select>
+
+  <select id="statusFilter" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="ALL">All Status</option>
+    <option value="RUNNING">Running</option>
+    <option value="WARNING">Warning</option>
+    <option value="MAINTENANCE">Maintenance</option>
+    <option value="DOWN">Down</option>
+  </select>
+
+  <select id="criticalityFilter" onchange="applyFilters()"
+    class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+    <option value="ALL">All Criticality</option>
+    <option value="HIGH">High</option>
+    <option value="MEDIUM">Medium</option>
+    <option value="LOW">Low</option>
+  </select>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="text-left py-2 pr-4">Asset ID</th>
+        <th class="text-left py-2 pr-4">Machine</th>
+        <th class="text-left py-2 pr-4">Type</th>
+        <th class="text-left py-2 pr-4">Line</th>
+        <th class="text-left py-2 pr-4">Location</th>
+        <th class="text-left py-2 pr-4">Criticality</th>
+        <th class="text-left py-2">Status</th>
+      </tr>
+    </thead>
+    <tbody id="assetTable"></tbody>
+  </table>
+  <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No assets match this filter.</p>
+</div>
+
+<script>
+const CRITICALITY_COLOR = {
+  HIGH:   'text-red-400',
+  MEDIUM: 'text-yellow-400',
+  LOW:    'text-green-400'
+}
+const ASSET_STATUS_COLOR = {
+  RUNNING:     'text-green-400',
+  WARNING:     'text-yellow-400',
+  MAINTENANCE: 'text-orange-400',
+  DOWN:        'text-red-400'
+}
+
+let allAssets = []
+
+function renderAssetRow(asset) {
+  const critCls   = CRITICALITY_COLOR[asset.criticality] || 'text-gray-300'
+  const statusCls = ASSET_STATUS_COLOR[asset.status] || 'text-gray-300'
+  return `
+    <tr class="border-b border-gray-700 hover:bg-gray-750 transition-colors">
+      <td class="py-3 pr-4 font-mono">
+        <a href="/assets/${asset.asset_id}" class="text-blue-400 hover:text-blue-300 hover:underline">${asset.asset_id}</a>
+      </td>
+      <td class="py-3 pr-4">
+        <p class="text-gray-100">${asset.machine_name}</p>
+        <p class="text-gray-500 text-xs font-mono">${asset.machine_id}</p>
+      </td>
+      <td class="py-3 pr-4 text-gray-300">${asset.machine_type || '—'}</td>
+      <td class="py-3 pr-4 font-mono">
+        <a href="/production-lines/${asset.line_id}" class="text-blue-400 hover:text-blue-300 hover:underline">${asset.line_id}</a>
+      </td>
+      <td class="py-3 pr-4 text-gray-400">${asset.location || '—'}</td>
+      <td class="py-3 pr-4 font-semibold ${critCls}">${asset.criticality}</td>
+      <td class="py-3 font-semibold ${statusCls}">${asset.status}</td>
+    </tr>`
+}
+
+function renderTable(assets) {
+  const tbody = document.getElementById('assetTable')
+  const empty = document.getElementById('emptyMsg')
+
+  if (assets.length === 0) {
+    empty.classList.remove('hidden')
+    tbody.innerHTML = ''
+    return
+  }
+  empty.classList.add('hidden')
+  tbody.innerHTML = assets.map(renderAssetRow).join('')
+}
+
+function applyFilters() {
+  const search      = document.getElementById('searchBox').value.trim().toLowerCase()
+  const line        = document.getElementById('lineFilter').value
+  const status      = document.getElementById('statusFilter').value
+  const criticality = document.getElementById('criticalityFilter').value
+
+  let filtered = allAssets
+
+  if (search) {
+    filtered = filtered.filter(a => {
+      const haystack = [a.asset_id, a.machine_id, a.machine_name, a.machine_type]
+        .filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(search)
+    })
+  }
+  if (line !== 'ALL')        filtered = filtered.filter(a => a.line_id === line)
+  if (status !== 'ALL')      filtered = filtered.filter(a => a.status === status)
+  if (criticality !== 'ALL') filtered = filtered.filter(a => a.criticality === criticality)
+
+  renderTable(filtered)
+}
+
+async function load() {
+  try {
+    const [assets, lines] = await Promise.all([
+      fetch('/api/assets').then(r => r.json()),
+      fetch('/api/production-lines').then(r => r.json())
+    ])
+    if (assets.error) throw new Error(assets.error)
+
+    allAssets = assets
+
+    const lineSelect = document.getElementById('lineFilter')
+    lines.forEach(l => {
+      const opt = document.createElement('option')
+      opt.value = l.line_id
+      opt.textContent = `${l.line_id} — ${l.line_name}`
+      lineSelect.appendChild(opt)
+    })
+
+    applyFilters()
+  } catch (err) {
+    console.error('Failed to load assets:', err)
+    document.getElementById('assetTable').innerHTML = ''
+    document.getElementById('emptyMsg').textContent = 'Failed to load assets.'
+    document.getElementById('emptyMsg').classList.remove('hidden')
+  }
+}
+
+load()
+</script>
+{% endblock %}

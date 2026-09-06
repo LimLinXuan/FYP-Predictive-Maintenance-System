@@ -1,41 +1,406 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="flex items-center justify-center min-h-[70vh]">
-  <div class="bg-gray-900 border border-gray-800 rounded-xl p-8 w-full max-w-sm">
-    <h1 class="text-xl font-bold text-blue-400 mb-1">⚙ PredictiveMaint</h1>
-    <p class="text-gray-400 text-sm mb-6">Sign in to continue</p>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, msg in messages %}
-          <div class="mb-4 rounded-lg px-3 py-2 text-sm
-            {{ 'bg-red-900 border border-red-700 text-red-200' if category == 'error'
-               else 'bg-green-900 border border-green-700 text-green-200' if category == 'success'
-               else 'bg-gray-800 border border-gray-700 text-gray-200' }}">
-            {{ msg }}
+<style>
+  :root {
+    --bg-void: #05070a;
+    --bg-panel: #0b0f14;
+    --bg-elevated: #141a22;
+    --line: #1c2530;
+    --blue: #3b82f6;
+    --blue-dim: rgba(59, 130, 246, 0.18);
+    --cyan: #22d3ee;
+    --amber: #f2a93b;
+    --text-primary: #e4eaf0;
+    --text-muted: #6b7785;
+    --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  }
+
+  .pm-page {
+    min-height: calc(100vh - 3rem);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-ui);
+  }
+
+  .pm-card {
+    width: 100%;
+    max-width: 1100px;
+    height: 680px;
+    display: flex;
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    color: var(--text-primary);
+  }
+
+  /* ---------- LEFT: system panel ---------- */
+  .pm-scene {
+    position: relative;
+    flex: 0 0 45%;
+    overflow: hidden;
+    background: var(--bg-void);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 2rem 2.25rem;
+  }
+
+  .pm-grid {
+    position: absolute;
+    inset: -20% -10%;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.3;
+    animation: pm-drift 26s linear infinite;
+  }
+  @keyframes pm-drift {
+    from { transform: translate(0, 0); }
+    to   { transform: translate(40px, 40px); }
+  }
+  .pm-scene::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 30% 15%, transparent 0%, var(--bg-void) 75%);
+    pointer-events: none;
+  }
+
+  .pm-brand {
+    position: relative;
+    z-index: 2;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+  }
+  .pm-brand strong { color: var(--text-primary); font-weight: 500; }
+
+  .pm-svg-wrap {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    margin: 0.5rem -0.5rem;
+  }
+
+  .pm-node-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .pm-pulse {
+    animation: pm-pulse 2.8s ease-in-out infinite;
+    transform-origin: center;
+  }
+  .pm-pulse-alt {
+    animation: pm-pulse 2.8s ease-in-out infinite;
+    animation-delay: 0.9s;
+    transform-origin: center;
+  }
+  @keyframes pm-pulse {
+    0%, 100% { opacity: 0.5; r: 4; }
+    50%      { opacity: 1;   r: 5.5; }
+  }
+
+  .pm-line { stroke: #232d3a; stroke-width: 1.5; fill: none; }
+
+  .pm-footer {
+    position: relative;
+    z-index: 2;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--line);
+  }
+  .pm-capabilities {
+    list-style: none;
+    margin: 0 0 0.9rem;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem 1rem;
+  }
+  .pm-capabilities li {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .pm-capabilities li::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    background: var(--cyan);
+    border-radius: 1px;
+    flex-shrink: 0;
+  }
+  .pm-tagline {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: #3d4956;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.6rem;
+  }
+  .pm-ready {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: #4a5666;
+    letter-spacing: 0.04em;
+  }
+  .pm-ready-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: #3d5a4a;
+    box-shadow: 0 0 0 0 rgba(45,200,120,0.25);
+    animation: pm-ready-pulse 3.5s ease-in-out infinite;
+  }
+  @keyframes pm-ready-pulse {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1; }
+  }
+
+  /* ---------- RIGHT: auth form ---------- */
+  .pm-auth {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-panel);
+    padding: 2rem;
+  }
+
+  .pm-form-wrap { width: 100%; max-width: 340px; }
+
+  .pm-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    margin-bottom: 0.6rem;
+  }
+  .pm-title { font-size: 1.65rem; font-weight: 600; margin: 0 0 0.4rem; color: var(--text-primary); }
+  .pm-subtitle { font-size: 0.9rem; color: var(--text-muted); margin: 0 0 1.75rem; line-height: 1.4; }
+
+  .pm-flash {
+    margin-bottom: 1.1rem;
+    border-radius: 6px;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.83rem;
+    border: 1px solid;
+  }
+  .pm-flash.error   { background: rgba(220, 60, 60, 0.08); border-color: rgba(220,60,60,0.35); color: #f0a5a5; }
+  .pm-flash.success { background: rgba(45, 200, 120, 0.08); border-color: rgba(45,200,120,0.3); color: #92e0b3; }
+  .pm-flash.default { background: var(--bg-elevated); border-color: var(--line); color: var(--text-muted); }
+
+  .pm-field { margin-bottom: 1.15rem; }
+  .pm-field label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.01em;
+  }
+  .pm-field input {
+    width: 100%;
+    box-sizing: border-box;
+    height: 46px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 0 0.85rem;
+    font-size: 0.92rem;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    transition: border-color 0.15s ease;
+  }
+  .pm-field input:focus {
+    outline: none;
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-dim);
+  }
+  .pm-field input:-webkit-autofill,
+  .pm-field input:-webkit-autofill:hover,
+  .pm-field input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--text-primary);
+    -webkit-box-shadow: 0 0 0px 1000px var(--bg-elevated) inset;
+    box-shadow: 0 0 0px 1000px var(--bg-elevated) inset;
+    caret-color: var(--text-primary);
+    transition: background-color 9999s ease-in-out 0s;
+  }
+
+  .pm-submit {
+    width: 100%;
+    height: 46px;
+    border: none;
+    border-radius: 7px;
+    background: var(--blue);
+    color: #f5f9ff;
+    font-family: var(--font-ui);
+    font-weight: 600;
+    font-size: 0.92rem;
+    cursor: pointer;
+    margin-top: 0.3rem;
+    transition: filter 0.15s ease;
+  }
+  .pm-submit:hover { filter: brightness(1.1); }
+
+  .pm-footnote {
+    text-align: center;
+    margin-top: 1.2rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  @media (max-width: 860px) {
+    .pm-card { height: auto; }
+    .pm-scene { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pm-grid, .pm-pulse, .pm-pulse-alt, .pm-ready-dot { animation: none; }
+  }
+</style>
+
+<div class="pm-page">
+  <div class="pm-card">
+
+    <!-- LEFT: branching data-flow pipeline + capabilities -->
+    <div class="pm-scene">
+      <div class="pm-grid"></div>
+
+      <div class="pm-brand">⚙ <strong>Predictive Maintenance</strong> — Industrial Operations Console</div>
+
+      <div class="pm-svg-wrap">
+        <svg viewBox="0 0 460 400" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg">
+          <!-- Machine Data branches into Anomaly Detection + Failure Prediction -->
+          <path class="pm-line" d="M230,35 L120,110" />
+          <path class="pm-line" d="M230,35 L340,110" />
+          <!-- both merge into Risk Engine -->
+          <path class="pm-line" d="M120,110 L230,190" />
+          <path class="pm-line" d="M340,110 L230,190" />
+          <!-- Risk Engine -> Alerts & Decisions -> Dashboard -->
+          <path class="pm-line" d="M230,190 L230,270" />
+          <path class="pm-line" d="M230,270 L230,345" />
+
+          <circle r="2.3" fill="var(--cyan)">
+            <animateMotion dur="3.6s" repeatCount="indefinite" path="M230,35 L120,110" />
+          </circle>
+          <circle r="2.3" fill="var(--cyan)">
+            <animateMotion dur="3.9s" begin="0.5s" repeatCount="indefinite" path="M230,35 L340,110" />
+          </circle>
+          <circle r="2.3" fill="var(--cyan)">
+            <animateMotion dur="3.4s" begin="1.6s" repeatCount="indefinite" path="M120,110 L230,190" />
+          </circle>
+          <circle r="2.3" fill="var(--cyan)">
+            <animateMotion dur="3.4s" begin="2.1s" repeatCount="indefinite" path="M340,110 L230,190" />
+          </circle>
+          <circle r="2.3" fill="var(--amber)">
+            <animateMotion dur="3.2s" begin="0.9s" repeatCount="indefinite" path="M230,190 L230,270" />
+          </circle>
+          <circle r="2.3" fill="var(--cyan)">
+            <animateMotion dur="3.2s" begin="1.4s" repeatCount="indefinite" path="M230,270 L230,345" />
+          </circle>
+
+          <!-- Machine Data -->
+          <g>
+            <circle cx="230" cy="35" r="5" fill="none" stroke="var(--cyan)" stroke-width="1" />
+            <circle class="pm-pulse" cx="230" cy="35" fill="var(--cyan)" />
+            <text class="pm-node-label" x="245" y="30" text-anchor="start">MACHINE DATA</text>
+          </g>
+          <!-- Anomaly Detection -->
+          <g>
+            <circle cx="120" cy="110" r="5" fill="none" stroke="var(--cyan)" stroke-width="1" />
+            <circle class="pm-pulse-alt" cx="120" cy="110" fill="var(--cyan)" />
+            <text class="pm-node-label" x="20" y="107" text-anchor="start">ANOMALY DETECTION</text>
+          </g>
+          <!-- Failure Prediction -->
+          <g>
+            <circle cx="340" cy="110" r="5" fill="none" stroke="var(--cyan)" stroke-width="1" />
+            <circle class="pm-pulse" cx="340" cy="110" fill="var(--cyan)" />
+            <text class="pm-node-label" x="352" y="107" text-anchor="start">FAILURE PREDICTION</text>
+          </g>
+          <!-- Risk Engine -->
+          <g>
+            <circle cx="230" cy="190" r="5" fill="none" stroke="var(--amber)" stroke-width="1" />
+            <circle class="pm-pulse-alt" cx="230" cy="190" fill="var(--amber)" />
+            <text class="pm-node-label" x="245" y="194" fill="var(--amber)" text-anchor="start">RISK ENGINE</text>
+          </g>
+          <!-- Alerts & Decisions -->
+          <g>
+            <circle cx="230" cy="270" r="5" fill="none" stroke="var(--cyan)" stroke-width="1" />
+            <circle class="pm-pulse" cx="230" cy="270" fill="var(--cyan)" />
+            <text class="pm-node-label" x="245" y="274" text-anchor="start">ALERTS &amp; DECISIONS</text>
+          </g>
+          <!-- Dashboard -->
+          <g>
+            <circle cx="230" cy="345" r="5" fill="none" stroke="var(--cyan)" stroke-width="1" />
+            <circle class="pm-pulse-alt" cx="230" cy="345" fill="var(--cyan)" />
+            <text class="pm-node-label" x="245" y="349" text-anchor="start">DASHBOARD</text>
+          </g>
+        </svg>
+      </div>
+
+      <div class="pm-footer">
+        <ul class="pm-capabilities">
+          <li>Machine Monitoring</li>
+          <li>Anomaly Detection</li>
+          <li>Failure Prediction</li>
+          <li>Maintenance Intelligence</li>
+        </ul>
+        <div class="pm-tagline">Machine Monitoring &amp; Predictive Maintenance</div>
+        <div class="pm-ready"><span class="pm-ready-dot"></span> SYSTEM READY</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: login form -->
+    <div class="pm-auth">
+      <div class="pm-form-wrap">
+        <div class="pm-eyebrow">RESTRICTED ACCESS</div>
+        <h1 class="pm-title">Sign in</h1>
+        <p class="pm-subtitle">Sign in to continue to the operations console.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, msg in messages %}
+              <div class="pm-flash {{ 'error' if category == 'error' else 'success' if category == 'success' else 'default' }}">
+                {{ msg }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('login') }}">
+          <div class="pm-field">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autofocus autocomplete="username">
           </div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+          <div class="pm-field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="pm-submit">Sign in</button>
+        </form>
 
-    <form method="POST" action="{{ url_for('login') }}" class="space-y-4">
-      <div>
-        <label class="text-xs text-gray-400">Username</label>
-        <input type="text" name="username" required autofocus
-          class="mt-1 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
-                 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <p class="pm-footnote">Authorized personnel only</p>
       </div>
-      <div>
-        <label class="text-xs text-gray-400">Password</label>
-        <input type="password" name="password" required
-          class="mt-1 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
-                 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
-      </div>
-      <button type="submit"
-        class="w-full bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg py-2 text-sm font-medium">
-        Log in
-      </button>
-    </form>
+    </div>
+
   </div>
 </div>
 {% endblock %}

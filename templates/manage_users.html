@@ -1,90 +1,503 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="text-xl font-bold text-blue-400 mb-6">Manage Users</h1>
+
+{% set total_users = users|length %}
+{% set active_users = users|selectattr('is_active')|list|length %}
+{% set disabled_users = total_users - active_users %}
+{% set admin_count = users|selectattr('role','equalto','admin')|list|length %}
+{% set technician_count = users|selectattr('role','equalto','technician')|list|length %}
+
+<!-- Header -->
+<div class="flex items-start justify-between mb-6 fade-in-up" style="animation-delay:0s">
+  <div>
+    <h1 class="text-2xl font-bold">Manage Users</h1>
+    <p class="text-gray-400 text-sm mt-1">Manage system users, roles and access permissions</p>
+  </div>
+  <div class="flex items-center gap-3">
+    <span class="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-full px-3 py-1.5 text-xs text-gray-300">
+      <span class="w-1.5 h-1.5 rounded-full bg-green-500 status-pulse-dot"></span>
+      SYSTEM READY
+    </span>
+    <button onclick="muOpenAddUserModal()"
+      class="bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-1.5">
+      <span class="text-base leading-none">+</span> Add User
+    </button>
+  </div>
+</div>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% if messages %}
     {% for category, msg in messages %}
-      <div class="mb-4 rounded-lg px-3 py-2 text-sm max-w-lg
-        {{ 'bg-red-900 border border-red-700 text-red-200' if category == 'error'
+      <div class="mb-4 max-w-lg fade-in-up" style="animation-delay:0.05s">
+        <span class="{{ 'bg-red-900 border border-red-700 text-red-200' if category == 'error'
            else 'bg-green-900 border border-green-700 text-green-200' if category == 'success'
-           else 'bg-gray-800 border border-gray-700 text-gray-200' }}">
-        {{ msg }}
+           else 'bg-gray-800 border border-gray-700 text-gray-200' }} rounded-lg px-3 py-2 text-sm block">
+          {{ msg }}
+        </span>
       </div>
     {% endfor %}
   {% endif %}
 {% endwith %}
 
-<!-- Create user form -->
-<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8 max-w-lg">
-  <h2 class="text-sm font-semibold text-gray-300 mb-4">Create New User</h2>
-  <form method="POST" action="{{ url_for('create_user') }}" class="space-y-3">
-    <input type="text" name="username" placeholder="Username" required
-      class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
-    <input type="email" name="email" placeholder="Email" required
-      class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
-    <input type="password" name="password" placeholder="Password" required
-      class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
-    <select name="role" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
-      <option value="technician">Technician</option>
-      <option value="admin">Admin</option>
-    </select>
-    <button type="submit"
-      class="w-full bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg py-2 text-sm font-medium">
-      Create User
-    </button>
-  </form>
+<!-- Summary cards -->
+<div class="grid grid-cols-4 gap-4 mb-6 fade-in-up" style="animation-delay:0.1s">
+  <div class="glow-card bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Total Users</p>
+    <p class="text-3xl font-bold mt-1">{{ total_users }}</p>
+    <p class="text-xs text-gray-500 mt-1">accounts on this system</p>
+  </div>
+  <div class="glow-card bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Active</p>
+    <p class="text-3xl font-bold mt-1 text-green-400">{{ active_users }}</p>
+    <p class="text-xs text-gray-500 mt-1">
+      {{ ((active_users / total_users * 100) | round | int) if total_users else 0 }}% of all users
+    </p>
+  </div>
+  <div class="glow-card bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Admins</p>
+    <p class="text-3xl font-bold mt-1 text-purple-400">{{ admin_count }}</p>
+    <p class="text-xs text-gray-500 mt-1">full system access</p>
+  </div>
+  <div class="glow-card bg-gray-800 rounded-xl p-5">
+    <p class="text-gray-400 text-sm">Technicians</p>
+    <p class="text-3xl font-bold mt-1 text-blue-400">{{ technician_count }}</p>
+    <p class="text-xs text-gray-500 mt-1">alert response team</p>
+  </div>
+</div>
+
+<!-- Search + filters -->
+<div class="bg-gray-800 rounded-xl p-4 mb-4 flex flex-wrap items-center gap-3 fade-in-up" style="animation-delay:0.15s">
+  <input id="userSearchInput" type="text" placeholder="Search users by name or email..."
+    oninput="muApplyFilters()"
+    class="flex-1 min-w-[220px] bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-blue-500">
+  <select id="roleFilterSelect" onchange="muApplyFilters()"
+    class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300">
+    <option value="ALL">All Roles</option>
+    <option value="admin">Admin</option>
+    <option value="technician">Technician</option>
+  </select>
+  <select id="statusFilterSelect" onchange="muApplyFilters()"
+    class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300">
+    <option value="ALL">All Status</option>
+    <option value="active">Active</option>
+    <option value="disabled">Disabled</option>
+  </select>
+  <span id="userRowCount" class="text-xs text-gray-500 ml-auto"></span>
 </div>
 
 <!-- Users table -->
-<div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden max-w-3xl">
+<div class="bg-gray-800 rounded-xl overflow-visible fade-in-up" style="animation-delay:0.2s">
   <table class="w-full text-sm text-left">
-    <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+    <thead class="bg-gray-900/60 text-gray-400 text-xs uppercase">
       <tr>
-        <th class="px-4 py-3">Username</th>
-        <th class="px-4 py-3">Email</th>
+        <th class="px-4 py-3">User</th>
         <th class="px-4 py-3">Role</th>
         <th class="px-4 py-3">Status</th>
         <th class="px-4 py-3">Last Login</th>
         <th class="px-4 py-3 text-right">Actions</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-gray-800">
+    <tbody class="divide-y divide-gray-700" id="usersTableBody">
       {% for u in users %}
-      <tr>
-        <td class="px-4 py-3">{{ u.username }}</td>
-        <td class="px-4 py-3 text-gray-400">{{ u.email }}</td>
+      <tr class="user-row" data-username="{{ u.username|lower }}" data-email="{{ u.email|lower }}"
+          data-role="{{ u.role }}" data-status="{{ 'active' if u.is_active else 'disabled' }}">
         <td class="px-4 py-3">
-          <span class="px-2 py-0.5 rounded text-xs
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-gray-700 border border-gray-600 flex items-center justify-center text-xs font-bold text-gray-200 shrink-0">
+              {{ u.username[:2]|upper }}
+            </div>
+            <div>
+              <p class="text-gray-100 font-medium leading-tight">{{ u.username }}</p>
+              <p class="text-gray-500 text-xs leading-tight">{{ u.email }}</p>
+            </div>
+          </div>
+        </td>
+        <td class="px-4 py-3">
+          <span class="px-2 py-0.5 rounded text-xs font-semibold
             {{ 'bg-purple-900 text-purple-200' if u.role == 'admin' else 'bg-blue-900 text-blue-200' }}">
-            {{ u.role }}
+            {{ u.role|capitalize }}
           </span>
         </td>
         <td class="px-4 py-3">
           {% if u.is_active %}
-            <span class="text-green-400 text-xs">Active</span>
+            <span class="flex items-center gap-1.5 text-green-400 text-xs font-semibold">
+              <span class="w-1.5 h-1.5 rounded-full bg-green-500 status-pulse-dot"></span> Active
+            </span>
           {% else %}
-            <span class="text-red-400 text-xs">Disabled</span>
+            <span class="flex items-center gap-1.5 text-red-400 text-xs font-semibold">
+              <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> Disabled
+            </span>
           {% endif %}
         </td>
         <td class="px-4 py-3 text-gray-500 text-xs">
           {{ u.last_login[:16].replace('T', ' ') if u.last_login else '—' }}
         </td>
-        <td class="px-4 py-3 text-right space-x-2">
-          <a href="{{ url_for('edit_user', user_id=u.id) }}" class="text-xs text-blue-400 hover:underline">Edit</a>
-          <form method="POST" action="{{ url_for('toggle_active', user_id=u.id) }}" class="inline">
-            <button class="text-xs text-yellow-400 hover:underline">
-              {{ 'Disable' if u.is_active else 'Enable' }}
+        <td class="px-4 py-3">
+          <div class="flex items-center justify-end gap-3 relative">
+            <a href="{{ url_for('edit_user', user_id=u.id) }}" class="text-xs text-blue-400 hover:text-blue-300 hover:underline">Edit</a>
+
+            <button onclick="muToggleMenu({{ u.id }})" id="menuBtn-{{ u.id }}"
+              class="text-gray-400 hover:text-gray-200 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors">
+              ⋮
             </button>
-          </form>
-          <form method="POST" action="{{ url_for('delete_user', user_id=u.id) }}" class="inline"
-                onsubmit="return confirm('Delete this user?');">
-            <button class="text-xs text-red-400 hover:underline">Delete</button>
-          </form>
+
+            <div id="menu-{{ u.id }}" class="user-menu hidden absolute right-0 top-7 z-20 w-40 bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+              {% if u.id == current_user.id %}
+                <div class="w-full text-left px-3 py-2 text-xs text-gray-600 cursor-not-allowed"
+                  title="You cannot disable your own account.">
+                  Disable User
+                </div>
+                <div class="w-full text-left px-3 py-2 text-xs text-gray-600 cursor-not-allowed border-t border-gray-800"
+                  title="You cannot delete your own account.">
+                  Delete User
+                </div>
+              {% else %}
+                <button type="button"
+                  onclick="muHandleToggle({{ u.id }}, '{{ u.username }}', '{{ url_for('toggle_active', user_id=u.id) }}', {{ 'true' if u.is_active else 'false' }})"
+                  class="w-full text-left px-3 py-2 text-xs text-yellow-300 hover:bg-gray-800 transition-colors">
+                  {{ 'Disable User' if u.is_active else 'Enable User' }}
+                </button>
+                <button type="button"
+                  onclick="muOpenDeleteModal('{{ u.id }}', '{{ u.username }}', '{{ url_for('delete_user', user_id=u.id) }}')"
+                  class="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-gray-800 transition-colors border-t border-gray-800">
+                  Delete User
+                </button>
+              {% endif %}
+            </div>
+          </div>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <p id="userEmptyMsg" class="text-gray-500 text-center py-6 hidden">No users match this filter.</p>
 </div>
+
+<!-- Add User modal -->
+<div id="addUserModalBackdrop" class="modal-backdrop hidden">
+  <div id="addUserModalCard" class="modal-card bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-md">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-semibold text-gray-200 tracking-wide">CREATE NEW USER</h2>
+      <button onclick="muCloseAddUserModal()" class="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+    </div>
+    <form method="POST" action="{{ url_for('create_user') }}" class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Username</label>
+        <input type="text" name="username" placeholder="e.g. tester3" required
+          class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Email</label>
+        <input type="email" name="email" placeholder="name@example.com" required
+          class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Temporary Password</label>
+        <div class="flex gap-2">
+          <input id="newUserPassword" type="text" name="password" placeholder="Temporary password" required
+            class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500">
+          <button type="button" onclick="muGeneratePassword()"
+            class="bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-3 rounded-lg transition-colors whitespace-nowrap">
+            ⟳ Generate
+          </button>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">User will be required to change this on first login.</p>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Role</label>
+        <select name="role" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100">
+          <option value="technician">Technician</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button type="button" onclick="muCloseAddUserModal()"
+          class="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors">
+          Cancel
+        </button>
+        <button type="submit"
+          class="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 font-medium transition-colors">
+          Create User
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Delete confirmation modal -->
+<div id="deleteModalBackdrop" class="modal-backdrop hidden">
+  <div id="deleteModalCard" class="modal-card bg-gray-800 border border-red-900 rounded-xl p-6 w-full max-w-sm">
+    <h2 class="text-sm font-semibold text-red-300 tracking-wide mb-2">DELETE USER?</h2>
+    <p class="text-sm text-gray-300 mb-4">
+      Are you sure you want to delete <span id="deleteModalUsername" class="font-semibold text-gray-100"></span>?
+      This action cannot be undone.
+    </p>
+    <form id="deleteModalForm" method="POST" action="">
+      <div class="flex justify-end gap-2">
+        <button type="button" onclick="muCloseDeleteModal()"
+          class="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors">
+          Cancel
+        </button>
+        <button type="submit"
+          class="px-4 py-2 text-sm rounded-lg bg-red-700 hover:bg-red-600 font-medium transition-colors">
+          Delete User
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Disable confirmation modal -->
+<div id="disableModalBackdrop" class="modal-backdrop hidden">
+  <div id="disableModalCard" class="modal-card bg-gray-800 border border-yellow-900 rounded-xl p-6 w-full max-w-sm">
+    <h2 class="text-sm font-semibold text-yellow-300 tracking-wide mb-2">DISABLE USER?</h2>
+    <p class="text-sm text-gray-300 mb-4">
+      Are you sure you want to disable <span id="disableModalUsername" class="font-semibold text-gray-100"></span>?
+      This user will no longer be able to sign in.
+    </p>
+    <form id="disableModalForm" method="POST" action="">
+      <div class="flex justify-end gap-2">
+        <button type="button" onclick="muCloseDisableModal()"
+          class="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors">
+          Cancel
+        </button>
+        <button type="submit"
+          class="px-4 py-2 text-sm rounded-lg bg-yellow-700 hover:bg-yellow-600 font-medium transition-colors">
+          Disable User
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  /* ── Page load: staggered fade-in ── */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in-up {
+    opacity: 0;
+    animation: fadeInUp 0.4s ease-out forwards;
+  }
+
+  /* ── Summary card hover glow ── */
+  .glow-card {
+    border: 1px solid #374151; /* gray-700 */
+    transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+  }
+  .glow-card:hover {
+    border-color: #3b82f6; /* blue-500 */
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.15), 0 8px 20px -8px rgba(59,130,246,0.35);
+    transform: translateY(-2px);
+  }
+
+  /* ── Table row hover: subtle highlight + left indicator ── */
+  .user-row {
+    position: relative;
+    transition: background-color 0.15s ease;
+    border-left: 2px solid transparent;
+  }
+  .user-row:hover {
+    background-color: rgba(59,130,246,0.06);
+    border-left: 2px solid #3b82f6;
+  }
+
+  /* ── Status dot pulse (active users only) ── */
+  @keyframes statusPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+    70%  { box-shadow: 0 0 0 5px rgba(34,197,94,0); }
+    100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+  }
+  .status-pulse-dot {
+    animation: statusPulse 2.2s infinite;
+  }
+
+  /* ── Kebab dropdown menu ── */
+  .user-menu {
+    animation: fadeInUp 0.15s ease-out forwards;
+  }
+
+  /* ── Modal: blur backdrop + scale-in card ── */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(3,7,18,0.7);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  /* FIX: force the backdrop to actually leave the layout (and stop
+     intercepting clicks) when .hidden is applied. Without this rule,
+     .modal-backdrop's own `display:flex` and Tailwind's `.hidden
+     {display:none}` have identical specificity, so whichever stylesheet
+     happens to load/appear later in the DOM wins — which was silently
+     leaving a full-screen, invisible, click-blocking overlay on top of
+     the whole page after any modal was opened (even after "closing" it),
+     making everything underneath (including other pages) act read-only. */
+  .modal-backdrop.hidden {
+    display: none !important;
+  }
+  .modal-backdrop.modal-open {
+    opacity: 1;
+  }
+  .modal-card {
+    transform: scale(0.97);
+    opacity: 0;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+  .modal-backdrop.modal-open .modal-card {
+    transform: scale(1);
+    opacity: 1;
+  }
+</style>
+
+<script>
+(function () {
+  // Everything in this IIFE is scoped to this page only — no variable or
+  // function name here can collide with anything base.html (sidebar /
+  // notification widgets) or another page's script declares globally.
+  // Only the handful of entry points actually called from onclick/oninput/
+  // onchange attributes below are explicitly attached to window.
+
+  // ── Search + Role + Status filtering ──
+  function applyFilters() {
+    const search = document.getElementById('userSearchInput').value.trim().toLowerCase()
+    const role = document.getElementById('roleFilterSelect').value
+    const status = document.getElementById('statusFilterSelect').value
+
+    const rows = document.querySelectorAll('#usersTableBody .user-row')
+    let visibleCount = 0
+
+    rows.forEach(row => {
+      const matchesSearch = !search ||
+        row.dataset.username.includes(search) ||
+        row.dataset.email.includes(search)
+      const matchesRole = role === 'ALL' || row.dataset.role === role
+      const matchesStatus = status === 'ALL' || row.dataset.status === status
+
+      const visible = matchesSearch && matchesRole && matchesStatus
+      row.classList.toggle('hidden', !visible)
+      if (visible) visibleCount++
+    })
+
+    document.getElementById('userRowCount').textContent = `${visibleCount} user${visibleCount === 1 ? '' : 's'}`
+    document.getElementById('userEmptyMsg').classList.toggle('hidden', visibleCount !== 0)
+  }
+
+  // ── Kebab menu ──
+  let openMenuId = null
+  function toggleMenu(id) {
+    const menu = document.getElementById(`menu-${id}`)
+    if (openMenuId !== null && openMenuId !== id) {
+      document.getElementById(`menu-${openMenuId}`).classList.add('hidden')
+    }
+    menu.classList.toggle('hidden')
+    openMenuId = menu.classList.contains('hidden') ? null : id
+  }
+  document.addEventListener('click', (e) => {
+    if (openMenuId === null) return
+    const menu = document.getElementById(`menu-${openMenuId}`)
+    const btn = document.getElementById(`menuBtn-${openMenuId}`)
+    if (menu && !menu.contains(e.target) && e.target !== btn) {
+      menu.classList.add('hidden')
+      openMenuId = null
+    }
+  })
+
+  // ── Add User modal ──
+  function openAddUserModal() {
+    const backdrop = document.getElementById('addUserModalBackdrop')
+    backdrop.classList.remove('hidden')
+    requestAnimationFrame(() => backdrop.classList.add('modal-open'))
+  }
+  function closeAddUserModal() {
+    const backdrop = document.getElementById('addUserModalBackdrop')
+    backdrop.classList.remove('modal-open')
+    setTimeout(() => backdrop.classList.add('hidden'), 200)
+  }
+  function generatePassword() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$'
+    let pw = ''
+    for (let i = 0; i < 12; i++) pw += chars[Math.floor(Math.random() * chars.length)]
+    document.getElementById('newUserPassword').value = pw
+  }
+
+  // ── Enable / Disable toggle ──
+  // Enabling a user is non-destructive, so it submits immediately.
+  // Disabling signs the user out of future access, so it goes through
+  // the same confirm-modal pattern as Delete.
+  function handleToggle(id, username, actionUrl, isActive) {
+    if (openMenuId !== null) {
+      document.getElementById(`menu-${openMenuId}`).classList.add('hidden')
+      openMenuId = null
+    }
+    if (!isActive) {
+      const f = document.createElement('form')
+      f.method = 'POST'
+      f.action = actionUrl
+      document.body.appendChild(f)
+      f.submit()
+      return
+    }
+    document.getElementById('disableModalUsername').textContent = `"${username}"`
+    document.getElementById('disableModalForm').action = actionUrl
+    const backdrop = document.getElementById('disableModalBackdrop')
+    backdrop.classList.remove('hidden')
+    requestAnimationFrame(() => backdrop.classList.add('modal-open'))
+  }
+  function closeDisableModal() {
+    const backdrop = document.getElementById('disableModalBackdrop')
+    backdrop.classList.remove('modal-open')
+    setTimeout(() => backdrop.classList.add('hidden'), 200)
+  }
+
+  // ── Delete confirmation modal ──
+  function openDeleteModal(id, username, actionUrl) {
+    document.getElementById('deleteModalUsername').textContent = `"${username}"`
+    document.getElementById('deleteModalForm').action = actionUrl
+    const backdrop = document.getElementById('deleteModalBackdrop')
+    backdrop.classList.remove('hidden')
+    requestAnimationFrame(() => backdrop.classList.add('modal-open'))
+    // close any open kebab menu underneath
+    if (openMenuId !== null) {
+      document.getElementById(`menu-${openMenuId}`).classList.add('hidden')
+      openMenuId = null
+    }
+  }
+  function closeDeleteModal() {
+    const backdrop = document.getElementById('deleteModalBackdrop')
+    backdrop.classList.remove('modal-open')
+    setTimeout(() => backdrop.classList.add('hidden'), 200)
+  }
+
+  // Close modals on backdrop click (not on card click)
+  document.getElementById('addUserModalBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'addUserModalBackdrop') closeAddUserModal()
+  })
+  document.getElementById('deleteModalBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'deleteModalBackdrop') closeDeleteModal()
+  })
+  document.getElementById('disableModalBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'disableModalBackdrop') closeDisableModal()
+  })
+
+  // ── Expose only what inline HTML attributes need to call ──
+  window.muApplyFilters      = applyFilters
+  window.muToggleMenu        = toggleMenu
+  window.muOpenAddUserModal  = openAddUserModal
+  window.muCloseAddUserModal = closeAddUserModal
+  window.muGeneratePassword  = generatePassword
+  window.muHandleToggle      = handleToggle
+  window.muCloseDisableModal = closeDisableModal
+  window.muOpenDeleteModal   = openDeleteModal
+  window.muCloseDeleteModal  = closeDeleteModal
+
+  applyFilters()
+})();
+</script>
 {% endblock %}
