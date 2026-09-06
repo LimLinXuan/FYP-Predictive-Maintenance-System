@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex justify-between items-center mb-2">
+  <h1 class="text-2xl font-bold">Work Orders</h1>
+  {% if current_user.role == 'admin' %}
+  <button onclick="openCreateModal()"
+    class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+    + New Work Order
+  </button>
+  {% endif %}
+</div>
+<p class="text-gray-400 text-sm mb-6">Track maintenance jobs raised from AI alerts or created manually.</p>
+
+{% if current_user.role == 'technician' %}
+<div class="flex gap-2 mb-5">
+  <button onclick="filterOwner('MINE')" class="filter-btn active" id="btn-owner-MINE">My Work Orders</button>
+  <button onclick="filterOwner('ALL')" class="filter-btn" id="btn-owner-ALL">All Work Orders</button>
+</div>
+{% endif %}
+
+<!-- Status filter -->
+<div class="flex gap-2 mb-3 flex-wrap">
+  <button onclick="filterStatus('ALL')" class="filter-btn active" id="btn-ALL">All</button>
+  <button onclick="filterStatus('OPEN')" class="filter-btn" id="btn-OPEN">Open</button>
+  <button onclick="filterStatus('ASSIGNED')" class="filter-btn" id="btn-ASSIGNED">Assigned</button>
+  <button onclick="filterStatus('ACCEPTED')" class="filter-btn" id="btn-ACCEPTED">Accepted</button>
+  <button onclick="filterStatus('IN_PROGRESS')" class="filter-btn" id="btn-IN_PROGRESS">In Progress</button>
+  <button onclick="filterStatus('PENDING_VERIFICATION')" class="filter-btn" id="btn-PENDING_VERIFICATION">Pending Verification</button>
+  <button onclick="filterStatus('CLOSED')" class="filter-btn" id="btn-CLOSED">Closed</button>
+  <button onclick="filterStatus('CANCELLED')" class="filter-btn" id="btn-CANCELLED">Cancelled</button>
+</div>
+
+<!-- Priority filter -->
+<div class="flex gap-2 mb-5">
+  <button onclick="filterPriority('ALL')" class="filter-btn active" id="btn-pri-ALL">All Priorities</button>
+  <button onclick="filterPriority('CRITICAL')" class="filter-btn" id="btn-pri-CRITICAL">Critical</button>
+  <button onclick="filterPriority('HIGH')" class="filter-btn" id="btn-pri-HIGH">High</button>
+  <button onclick="filterPriority('MEDIUM')" class="filter-btn" id="btn-pri-MEDIUM">Medium</button>
+  <button onclick="filterPriority('LOW')" class="filter-btn" id="btn-pri-LOW">Low</button>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-gray-400 border-b border-gray-700">
+        <th class="text-left py-2 pr-4">WO ID</th>
+        <th class="text-left py-2 pr-4">Title</th>
+        <th class="text-left py-2 pr-4">Machine</th>
+        <th class="text-left py-2 pr-4">Priority</th>
+        <th class="text-left py-2 pr-4">Status</th>
+        <th class="text-left py-2 pr-4">Assignee</th>
+        <th class="text-left py-2 pr-4">Due Date</th>
+        <th class="text-left py-2">Source</th>
+      </tr>
+    </thead>
+    <tbody id="woTable"></tbody>
+  </table>
+  <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No work orders match this filter.</p>
+</div>
+
+<!-- Create modal (admin only) -->
+<div id="createModal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+  <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md">
+    <h2 class="text-lg font-semibold mb-4">New Work Order</h2>
+    <div class="space-y-3">
+      <input id="wo-title" placeholder="Title" class="w-full bg-gray-700 text-sm rounded px-3 py-2">
+      <textarea id="wo-desc" placeholder="Description" class="w-full bg-gray-700 text-sm rounded px-3 py-2" rows="3"></textarea>
+      <input id="wo-action" placeholder="Recommended action" class="w-full bg-gray-700 text-sm rounded px-3 py-2">
+      <select id="wo-priority" class="w-full bg-gray-700 text-sm rounded px-3 py-2">
+        <option value="LOW">Low</option>
+        <option value="MEDIUM" selected>Medium</option>
+        <option value="HIGH">High</option>
+        <option value="CRITICAL">Critical</option>
+      </select>
+      <input id="wo-machine" placeholder="Machine ID (optional, e.g. MCH-005)" class="w-full bg-gray-700 text-sm rounded px-3 py-2">
+    </div>
+    <div class="flex justify-end gap-2 mt-5">
+      <button onclick="closeCreateModal()" class="text-gray-400 hover:text-white text-sm px-3 py-2">Cancel</button>
+      <button onclick="submitCreate()" class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg">Create</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .filter-btn { padding: 4px 14px; border-radius: 9999px; font-size: .75rem; background:#374151; color:#d1d5db; cursor:pointer; border:1px solid transparent; transition:.15s; }
+  .filter-btn:hover { background:#4b5563; }
+  .filter-btn.active { background:#2563eb; color:white; border-color:#3b82f6; }
+</style>
+
+<script>
+const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
+
+const priorityColor = { CRITICAL:'text-red-400', HIGH:'text-orange-400', MEDIUM:'text-yellow-400', LOW:'text-green-400' }
+const statusColor = {
+  OPEN:                 'text-red-400',
+  ASSIGNED:             'text-blue-400',
+  ACCEPTED:             'text-cyan-400',
+  IN_PROGRESS:          'text-yellow-400',
+  PENDING_VERIFICATION: 'text-purple-400',
+  CLOSED:               'text-green-400',
+  CANCELLED:            'text-gray-400'
+}
+
+let allWOs = []
+let statusFilterVal = 'ALL'
+let priorityFilterVal = 'ALL'
+let ownerFilter = 'MINE'   // only relevant for technician
+
+async function load() {
+  allWOs = await fetch('/api/work-orders').then(r => r.json())
+  applyFilters()
+}
+
+function applyFilters() {
+  let data = allWOs
+  if (statusFilterVal !== 'ALL') data = data.filter(r => r.status === statusFilterVal)
+  if (priorityFilterVal !== 'ALL') data = data.filter(r => r.priority === priorityFilterVal)
+  if (CURRENT_USER.role === 'technician' && ownerFilter === 'MINE') {
+    data = data.filter(r => r.assigned_to === CURRENT_USER.username)
+  }
+  renderTable(data)
+}
+
+function filterStatus(s) {
+  statusFilterVal = s
+  document.querySelectorAll('[id^="btn-"]:not([id^="btn-pri-"]):not([id^="btn-owner-"])').forEach(b => b.classList.remove('active'))
+  document.getElementById(`btn-${s}`).classList.add('active')
+  applyFilters()
+}
+
+function filterPriority(p) {
+  priorityFilterVal = p
+  document.querySelectorAll('[id^="btn-pri-"]').forEach(b => b.classList.remove('active'))
+  document.getElementById(`btn-pri-${p}`).classList.add('active')
+  applyFilters()
+}
+
+function filterOwner(owner) {
+  ownerFilter = owner
+  document.getElementById('btn-owner-MINE').classList.remove('active')
+  document.getElementById('btn-owner-ALL').classList.remove('active')
+  document.getElementById(`btn-owner-${owner}`).classList.add('active')
+  applyFilters()
+}
+
+function fmtDue(dateStr) {
+  if (!dateStr) return '—'
+  const d = new Date(dateStr)
+  const now = new Date()
+  const overdue = d < now
+  return `<span class="${overdue ? 'text-red-400 font-semibold' : 'text-gray-300'}">${d.toLocaleString()}</span>`
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('woTable')
+  const empty = document.getElementById('emptyMsg')
+  tbody.innerHTML = ''
+  if (data.length === 0) { empty.classList.remove('hidden'); return }
+  empty.classList.add('hidden')
+
+  data.forEach(row => {
+    const pc = priorityColor[row.priority] || 'text-gray-300'
+    const sc = statusColor[row.status] || 'text-gray-300'
+    const tr = document.createElement('tr')
+    tr.className = 'border-b border-gray-700 hover:bg-gray-750 transition-colors'
+    tr.innerHTML = `
+      <td class="py-3 pr-4 font-mono">
+        <a href="/work-orders/${row.wo_id}" class="text-blue-400 hover:text-blue-300 hover:underline">#${row.wo_id}</a>
+      </td>
+      <td class="py-3 pr-4">${row.title}</td>
+      <td class="py-3 pr-4 font-mono text-xs text-gray-400">${row.machine_id || '—'}</td>
+      <td class="py-3 pr-4 font-bold ${pc}">${row.priority}</td>
+      <td class="py-3 pr-4 font-semibold text-xs ${sc}">${row.status.replace(/_/g,' ')}</td>
+      <td class="py-3 pr-4 text-xs">${row.assigned_to || '<span class="text-gray-600">Unassigned</span>'}</td>
+      <td class="py-3 pr-4 text-xs">${fmtDue(row.due_date)}</td>
+      <td class="py-3 text-xs">${row.record_id ? `<span class="text-purple-300">AI Alert #${row.record_id}</span>` : '<span class="text-gray-500">Manual</span>'}</td>
+    `
+    tbody.appendChild(tr)
+  })
+}
+
+function openCreateModal() { document.getElementById('createModal').classList.remove('hidden') }
+function closeCreateModal() { document.getElementById('createModal').classList.add('hidden') }
+
+async function submitCreate() {
+  const body = {
+    title: document.getElementById('wo-title').value.trim(),
+    description: document.getElementById('wo-desc').value.trim(),
+    recommended_action: document.getElementById('wo-action').value.trim(),
+    priority: document.getElementById('wo-priority').value,
+    machine_id: document.getElementById('wo-machine').value.trim() || null,
+  }
+  if (!body.title) { alert('Title is required.'); return }
+
+  const res = await fetch('/api/work-orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const data = await res.json()
+  if (res.ok) {
+    closeCreateModal()
+    showToast(`✅ Work Order #${data.wo_id} created`, 'info')
+    load()
+  } else {
+    alert('Failed: ' + data.error)
+  }
+}
+
+load()
+</script>
+{% endblock %}

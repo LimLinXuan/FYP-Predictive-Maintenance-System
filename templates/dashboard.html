@@ -1,132 +1,204 @@
 {% extends "base.html" %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-2">System Overview</h1>
-<p class="text-gray-400 text-sm mb-6">AI-Powered Predictive Maintenance Dashboard</p>
+<!-- Page header -->
+<div class="flex items-start justify-between mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">System Overview</h1>
+    <p class="text-gray-400 text-sm mt-1">Real-time machine monitoring and predictive maintenance intelligence</p>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span id="overallStatusBadge" class="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-full px-3 py-1.5 text-gray-300">
+      <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span> Checking status…
+    </span>
+    <span class="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-full px-3 py-1.5 text-gray-300">
+      <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+      Last updated: <span id="lastUpdated">—</span>
+    </span>
+  </div>
+</div>
 
 <!-- Summary cards -->
-<div class="grid grid-cols-4 gap-4 mb-8">
+<div class="grid grid-cols-5 gap-4 mb-6">
   <div class="bg-gray-800 rounded-xl p-5">
-    <p class="text-gray-400 text-sm">Total Records</p>
-    <p class="text-3xl font-bold mt-1" id="total">—</p>
+    <div class="flex items-center justify-between">
+      <p class="text-gray-400 text-sm">Assets Monitored</p>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-gray-500"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+    </div>
+    <p class="text-3xl font-bold mt-1" id="assets_monitored">—</p>
+    <p class="text-xs text-gray-500 mt-1" id="assets_monitored_sub">production machines under monitoring</p>
   </div>
   <div class="bg-red-950 border border-red-800 rounded-xl p-5">
-    <p class="text-red-300 text-sm">Open Alerts</p>
+    <div class="flex items-center justify-between">
+      <p class="text-red-300 text-sm">Open Alerts</p>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-red-400"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 10-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+    </div>
     <p class="text-3xl font-bold mt-1 text-red-400" id="open_alerts">—</p>
+    <p class="text-xs text-red-300/70 mt-1" id="open_alerts_sub">alerts currently requiring attention</p>
   </div>
   <div class="bg-orange-950 border border-orange-800 rounded-xl p-5">
-    <p class="text-orange-300 text-sm">High / Critical Risk</p>
+    <div class="flex items-center justify-between">
+      <p class="text-orange-300 text-sm">High / Critical Risk</p>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-orange-400"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+    </div>
     <p class="text-3xl font-bold mt-1 text-orange-400" id="high_risk">—</p>
+    <p class="text-xs text-orange-300/70 mt-1" id="high_risk_sub">records classified high or critical risk</p>
   </div>
+
+  <!-- Work Orders Summary Card (動態適應角色) -->
+  <div class="bg-purple-950 border border-purple-800 rounded-xl p-5">
+    <div class="flex items-center justify-between">
+      <p class="text-purple-300 text-sm" id="work_orders_card_label">Open Work Orders</p>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-purple-400"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+    </div>
+    <p class="text-3xl font-bold mt-1 text-purple-400" id="open_work_orders">—</p>
+    <p class="text-xs text-purple-300/70 mt-1" id="open_work_orders_sub">work orders awaiting completion</p>
+    <a href="/work-orders" class="text-xs text-purple-400 hover:text-purple-300 mt-2 inline-block" id="work_orders_card_link">View all →</a>
+  </div>
+
   <div class="bg-gray-800 rounded-xl p-5">
-    <p class="text-gray-400 text-sm">Avg Risk Score</p>
-    <p class="text-3xl font-bold mt-1 text-blue-400" id="avg_score">—</p>
+    <div class="flex items-center justify-between">
+      <p class="text-gray-400 text-sm">Platform Health</p>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 text-blue-400"><path stroke-linecap="round" stroke-linejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+    </div>
+    <p class="text-3xl font-bold mt-1 text-blue-400" id="system_health_pct">—</p>
+    <p class="text-xs text-gray-500 mt-1">API, database, model & infrastructure status</p>
   </div>
 </div>
 
 <!-- Charts row -->
-<div class="grid grid-cols-2 gap-6 mb-8">
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold mb-4 text-gray-200">Risk Level Distribution <span class="text-gray-500 text-xs font-normal">(click a slice to filter)</span></h2>
-    <canvas id="riskChart" height="220"></canvas>
-  </div>
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold mb-4 text-gray-200">Risk Score Trend <span class="text-gray-500 text-xs font-normal">(click a point to view details)</span></h2>
-    <canvas id="trendChart" height="220"></canvas>
-  </div>
-</div>
+<div class="grid grid-cols-2 gap-6 mb-6 items-stretch">
+  <!-- Risk Level Distribution Card -->
+  <div class="bg-gray-800 rounded-xl p-6 flex flex-col justify-between">
+    <div>
+      <h2 class="font-semibold mb-1 text-gray-200">Risk Level Distribution</h2>
+      <p class="text-gray-500 text-xs mb-3">Click a slice or legend item to filter alerts below</p>
+    </div>
 
-<!-- System health summary -->
-<div class="bg-gray-800 rounded-xl p-5 mb-8">
-  <div class="flex justify-between items-center mb-4">
-    <h2 class="font-semibold text-gray-200">System Health</h2>
-    <a href="/health" class="text-blue-400 hover:text-blue-300 text-sm">Full report →</a>
+    <div class="flex flex-col items-center justify-center flex-1 my-2">
+      <div class="relative w-80 h-80 shrink-0 mb-5 flex items-center justify-center">
+        <canvas id="riskChart"></canvas>
+      </div>
+      <div class="w-full max-w-sm px-2">
+        <div id="riskLegend" class="space-y-2.5 text-sm"></div>
+      </div>
+    </div>
+
+    <p class="text-gray-500 text-xs pt-3 border-t border-gray-700/80 text-center" id="riskSummaryLine">—</p>
   </div>
-  <div class="grid grid-cols-4 gap-4">
-    <div class="flex items-center gap-2">
-      <span id="hs_api_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
-      <span class="text-sm text-gray-300">API</span>
-      <span id="hs_api_status" class="text-xs text-gray-500 ml-auto">—</span>
+
+  <!-- Risk Score vs Failure Probability Card -->
+  <div class="bg-gray-800 rounded-xl p-6 flex flex-col justify-between">
+    <div>
+      <h2 class="font-semibold mb-1 text-gray-200">Risk Score vs Failure Probability</h2>
+      <p class="text-gray-500 text-xs mb-3" title="Ordered by record ID">Operational risk score vs. model failure probability <span class="text-gray-600">(click a point to view details)</span></p>
     </div>
-    <div class="flex items-center gap-2">
-      <span id="hs_db_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
-      <span class="text-sm text-gray-300">Database</span>
-      <span id="hs_db_status" class="text-xs text-gray-500 ml-auto">—</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <span id="hs_model_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
-      <span class="text-sm text-gray-300">Model</span>
-      <span id="hs_model_status" class="text-xs text-gray-500 ml-auto">—</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <span id="hs_sys_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>
-      <span class="text-sm text-gray-300">System</span>
-      <span id="hs_sys_status" class="text-xs text-gray-500 ml-auto">—</span>
+    <div class="flex-1 flex items-center">
+      <canvas id="trendChart" height="290"></canvas>
     </div>
   </div>
 </div>
 
-<!-- SHAP plots -->
-<div class="bg-gray-800 rounded-xl p-5 mb-8">
-  <h2 class="font-semibold mb-1 text-gray-200">SHAP — Explainability Analysis</h2>
-  <p class="text-gray-400 text-xs mb-6">Global and local explanations generated by SHAP TreeExplainer on the Random Forest model</p>
-
-  <!-- Bar chart (dynamic) -->
-  <h3 class="text-sm font-semibold text-gray-300 mb-1">Global Feature Importance (Mean |SHAP|)</h3>
-  <p class="text-gray-500 text-xs mb-1" id="shapBarSubtitle">Average impact of each feature across all test predictions</p>
-  <p class="text-gray-600 text-xs mb-3" id="shapBarMeta">—</p>
-  <div class="bg-gray-900 rounded-lg p-4 mb-8">
-    <canvas id="shapBarChart" height="420"></canvas>
+<!-- Top risk factors + Production & Platform health -->
+<div class="grid grid-cols-2 gap-6 mb-6 items-stretch">
+  <!-- Top Risk Factors -->
+  <div class="bg-gray-800 rounded-xl p-6 flex flex-col justify-between">
+    <div>
+      <div class="flex justify-between items-center mb-1">
+        <h2 class="font-semibold text-gray-200">Top Risk Factors</h2>
+        <a href="/explainability" class="text-blue-400 hover:text-blue-300 text-sm">View full SHAP analysis →</a>
+      </div>
+      <p class="text-gray-500 text-xs mb-1" id="shapBarSubtitle">Mean absolute SHAP impact of each feature across all test predictions</p>
+      <p class="text-gray-600 text-xs mb-3" id="shapBarMeta">—</p>
+      <div class="bg-gray-900 rounded-lg p-3">
+        <canvas id="shapBarChart" height="260"></canvas>
+      </div>
+    </div>
   </div>
 
-  <!-- Summary plot -->
-  <h3 class="text-sm font-semibold text-gray-300 mb-1">SHAP Summary Plot</h3>
-  <p class="text-gray-500 text-xs mb-3">Each dot = one prediction. Colour = feature value (red = high, blue = low). X-axis = impact on failure probability.</p>
-  <img src="/static/shap_summary.png" class="rounded mb-8 object-contain w-full">
+  <!-- Production & Platform Health Card -->
+  <div class="bg-gray-800 rounded-xl p-6 flex flex-col justify-between">
+    <div>
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="font-semibold text-gray-200">Production & Platform Health</h2>
+        <a href="/health" class="text-blue-400 hover:text-blue-300 text-sm">View details →</a>
+      </div>
+    </div>
 
-  <!-- Force plot (dynamic) -->
-<h3 class="text-sm font-semibold text-gray-300 mb-1">SHAP Contribution — Highest Risk Record <span id="forceRecordBadge" class="text-blue-400 font-mono"></span></h3>
-<p class="text-gray-500 text-xs mb-1">Local explanation: which features pushed this specific machine toward failure (red) or away from it (blue)</p>
-<p class="text-gray-600 text-xs mb-3" id="forceMeta">—</p>
-<div class="bg-gray-900 rounded-lg p-4">
-  <div style="position: relative; height: 420px; width: 100%;">
-    <canvas id="forcePlotChart"></canvas>
+    <div class="flex flex-col flex-1 justify-between gap-4">
+      <!-- 產線模組 -->
+      <div class="flex flex-col flex-1">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold tracking-wider text-gray-400 uppercase">Production Lines</span>
+          <span class="text-xs text-gray-400 font-mono" id="productionLinesSummary">Loading…</span>
+        </div>
+        <div id="productionLinesList" class="bg-gray-900/60 border border-gray-700/60 rounded-xl p-4 flex flex-col justify-around flex-1 gap-2.5">
+          <p class="text-gray-500 text-sm">Loading…</p>
+        </div>
+      </div>
+
+      <!-- 平台服務模組 -->
+      <div class="flex flex-col flex-1">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold tracking-wider text-gray-400 uppercase">Platform Services</span>
+          <span class="text-xs text-gray-400 font-mono" id="platformServicesSummary">Loading…</span>
+        </div>
+        <div class="bg-gray-900/60 border border-gray-700/60 rounded-xl p-4 flex flex-col justify-around flex-1 gap-2.5 text-sm">
+          <div class="flex items-center justify-between">
+            <span class="flex items-center gap-2.5 text-gray-300"><span id="hs_api_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>API Gateway</span>
+            <span id="hs_api_status" class="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="flex items-center gap-2.5 text-gray-300"><span id="hs_db_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>Database (SQLite)</span>
+            <span id="hs_db_status" class="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="flex items-center gap-2.5 text-gray-300"><span id="hs_model_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>ML Model (Random Forest)</span>
+            <span id="hs_model_status" class="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="flex items-center gap-2.5 text-gray-300"><span id="hs_sys_dot" class="w-2.5 h-2.5 rounded-full bg-gray-600"></span>System Resources</span>
+            <span id="hs_sys_status" class="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
-<!-- High risk table -->
+<!-- Risk alerts -->
 <div class="bg-gray-800 rounded-xl p-5">
-  <div class="flex justify-between items-center mb-4">
-    <h2 class="font-semibold text-gray-200">High Risk Records</h2>
+  <div class="flex justify-between items-center mb-1">
+    <h2 class="font-semibold text-gray-200">Risk Records</h2>
     <div class="flex items-center gap-3">
       <span id="riskFilterBadge" class="hidden items-center gap-2 text-xs bg-gray-700 text-gray-200 px-3 py-1.5 rounded-full">
         Filtering: <span id="riskFilterLabel" class="font-semibold"></span>
         <button onclick="clearRiskFilter()" class="text-gray-400 hover:text-white ml-1">✕</button>
       </span>
-      <a href="/alerts" class="text-blue-400 hover:text-blue-300 text-sm">Manage alerts →</a>
+      <a href="/alerts" class="text-blue-400 hover:text-blue-300 text-sm">View all alerts →</a>
     </div>
   </div>
+  <p class="text-xs text-gray-500 mb-4" id="riskAlertsSummary">—</p>
   <div class="flex items-center justify-between mb-3">
     <input
       id="riskSearchInput"
       type="text"
-      placeholder="Search by record ID, level, status or action..."
+      placeholder="Search by machine, record ID, level, status or action..."
       oninput="onRiskSearchInput()"
-      class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-72 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+      class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-80 placeholder-gray-500 focus:outline-none focus:border-blue-500"
     />
     <span id="riskRowCount" class="text-xs text-gray-500"></span>
   </div>
   <table class="w-full text-sm">
     <thead>
       <tr class="text-gray-400 border-b border-gray-700">
-        <th class="text-left py-2 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('record_id')">ID<span id="sortIcon_record_id"></span></th>
-        <th class="text-left py-2 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('pred_prob')">Probability<span id="sortIcon_pred_prob"></span></th>
-        <th class="text-left py-2 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('risk_score')">Score<span id="sortIcon_risk_score"></span></th>
-        <th class="text-left py-2 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('risk_level')">Level<span id="sortIcon_risk_level"></span></th>
-        <th class="text-left py-2 pr-4">SHAP Explanation</th>
-        <th class="text-left py-2 pr-4">Confidence</th>
-        <th class="text-left py-2 pr-4">Action</th>
-        <th class="text-left py-2 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('alert_status')">Status<span id="sortIcon_alert_status"></span></th>
+        <th class="text-left py-2.5 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('record_id')">ID<span id="sortIcon_record_id"></span></th>
+        <th class="text-left py-2.5 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('machine_id')">Machine<span id="sortIcon_machine_id"></span></th>
+        <th class="text-left py-2.5 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('pred_prob')">Failure Probability<span id="sortIcon_pred_prob"></span></th>
+        <th class="text-left py-2.5 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('risk_score')" title="Safety floor applied based on predicted failure probability.">Risk Score<span id="sortIcon_risk_score"></span></th>
+        <th class="text-left py-2.5 pr-4 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('risk_level')">Level<span id="sortIcon_risk_level"></span></th>
+        <th class="text-left py-2.5 pr-4">Recommended Action</th>
+        <th class="text-left py-2.5 cursor-pointer select-none hover:text-gray-200" onclick="setRiskSort('alert_status')">Status<span id="sortIcon_alert_status"></span></th>
       </tr>
     </thead>
     <tbody id="riskTable"></tbody>
@@ -134,27 +206,28 @@
 </div>
 
 <script>
+const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
+
 const levelColor  = { Critical:'text-red-400', High:'text-orange-400', Medium:'text-yellow-400', Low:'text-green-400' }
+const levelDot    = { Critical:'#ef4444', High:'#f97316', Medium:'#eab308', Low:'#22c55e' }
+const levelBadge  = {
+  Critical: 'bg-red-950 text-red-300 border border-red-800',
+  High:     'bg-orange-950 text-orange-300 border border-orange-800',
+  Medium:   'bg-yellow-950 text-yellow-300 border border-yellow-800',
+  Low:      'bg-green-950 text-green-300 border border-green-800'
+}
 const statusColor = { OPEN:'text-red-400', IN_PROGRESS:'text-yellow-400', RESOLVED:'text-green-400', FALSE_POSITIVE:'text-gray-400' }
-
-function confPct(prob)  { return (Math.abs(prob - 0.5) * 200).toFixed(0) + '%' }
-function confLabel(prob) {
-  const s = Math.abs(prob - 0.5) * 2
-  if (s >= 0.8) return 'Very High'
-  if (s >= 0.6) return 'High'
-  if (s >= 0.4) return 'Medium'
-  return 'Low'
-}
-function confClass(prob) {
-  const s = Math.abs(prob - 0.5) * 2
-  if (s >= 0.8) return 'text-green-400 text-xs font-semibold'
-  if (s >= 0.6) return 'text-blue-400 text-xs font-semibold'
-  if (s >= 0.4) return 'text-yellow-400 text-xs font-semibold'
-  return 'text-gray-400 text-xs font-semibold'
+const lineStatusMeta = {
+  RUNNING: { label: 'Running', dot: 'bg-green-500',  text: 'text-green-400'  },
+  WARNING: { label: 'Warning', dot: 'bg-yellow-500', text: 'text-yellow-400' },
+  DOWN:    { label: 'Down',    dot: 'bg-red-500',    text: 'text-red-400'    }
 }
 
-let riskChartInstance  = null
-let trendChartInstance = null
+const HIGH_RISK_PREVIEW_ROWS = 10
+const HIGH_RISK_FILTERED_ROWS = 25
+
+let riskChartInstance    = null
+let trendChartInstance   = null
 let shapBarChartInstance = null
 let prevSummary   = null
 let prevAlertIds  = new Set()
@@ -162,20 +235,46 @@ let prevStatusMap = new Map()
 let prevStreamRecordId = null
 
 let activeRiskFilter = null
-let lastAlerts = []
-let riskSearchTerm = ''
-let riskSortField = null
-let riskSortDir = 'desc'
+let lastAlerts        = []
+let riskSearchTerm     = ''
+let riskSortField      = null
+let riskSortDir        = 'desc'
+
+let lastTotalRecords = null
+let lastLowPct       = null
+let lastAssetsCount  = null
+
+function updateRiskSummaryLine() {
+  if (lastTotalRecords == null) return
+  const assetsPart = lastAssetsCount != null ? ` across ${lastAssetsCount} monitored assets` : ''
+  document.getElementById('riskSummaryLine').textContent =
+    `${lastTotalRecords.toLocaleString()} sensor records${assetsPart} · ${lastLowPct}% currently Low risk`
+}
 
 function setRiskFilter(label) {
-  activeRiskFilter = (activeRiskFilter === label) ? null : label
+  const next = { type: 'level', value: label }
+  activeRiskFilter = (activeRiskFilter && activeRiskFilter.type === 'level' && activeRiskFilter.value === label)
+    ? null
+    : next
   updateRiskFilterBadge()
+  if (lastDistribution) renderRiskLegend(lastDistribution, lastTotalForLegend)
+  renderRiskTable(lastAlerts)
+}
+
+function setStatusFilter(status) {
+  const next = { type: 'status', value: status }
+  activeRiskFilter = (activeRiskFilter && activeRiskFilter.type === 'status' && activeRiskFilter.value === status)
+    ? null
+    : next
+  updateRiskFilterBadge()
+  if (lastDistribution) renderRiskLegend(lastDistribution, lastTotalForLegend)
   renderRiskTable(lastAlerts)
 }
 
 function clearRiskFilter() {
   activeRiskFilter = null
   updateRiskFilterBadge()
+  if (lastDistribution) renderRiskLegend(lastDistribution, lastTotalForLegend)
   renderRiskTable(lastAlerts)
 }
 
@@ -184,7 +283,10 @@ function updateRiskFilterBadge() {
   if (activeRiskFilter) {
     badge.classList.remove('hidden')
     badge.classList.add('flex')
-    document.getElementById('riskFilterLabel').textContent = activeRiskFilter
+    const label = activeRiskFilter.type === 'status'
+      ? activeRiskFilter.value.replace('_', ' ')
+      : activeRiskFilter.value
+    document.getElementById('riskFilterLabel').textContent = label
   } else {
     badge.classList.add('hidden')
     badge.classList.remove('flex')
@@ -207,7 +309,7 @@ function setRiskSort(field) {
 }
 
 function updateSortIcons() {
-  const fields = ['record_id', 'pred_prob', 'risk_score', 'risk_level', 'alert_status']
+  const fields = ['record_id', 'machine_id', 'pred_prob', 'risk_score', 'risk_level', 'alert_status']
   fields.forEach(f => {
     const el = document.getElementById(`sortIcon_${f}`)
     if (!el) return
@@ -221,21 +323,30 @@ function updateSortIcons() {
 }
 
 function renderRiskTable(alerts) {
-  let filtered = activeRiskFilter
-    ? alerts.filter(a => a.risk_level === activeRiskFilter)
-    : alerts.slice()
+  lastAlerts = alerts
+
+  let filtered = alerts.slice()
+  if (activeRiskFilter) {
+    if (activeRiskFilter.type === 'level') {
+      filtered = filtered.filter(a => a.risk_level === activeRiskFilter.value)
+    } else if (activeRiskFilter.type === 'status') {
+      filtered = filtered.filter(a => a.alert_status === activeRiskFilter.value)
+    }
+  }
 
   if (riskSearchTerm) {
     filtered = filtered.filter(a =>
       String(a.record_id).includes(riskSearchTerm) ||
+      (a.machine_id || '').toLowerCase().includes(riskSearchTerm) ||
       a.alert_status.toLowerCase().replace('_', ' ').includes(riskSearchTerm) ||
       a.risk_level.toLowerCase().includes(riskSearchTerm) ||
       (a.action || '').toLowerCase().includes(riskSearchTerm)
     )
   }
 
+  const levelRank = { Critical: 4, High: 3, Medium: 2, Low: 1 }
+
   if (riskSortField) {
-    const levelRank = { Critical: 4, High: 3, Medium: 2, Low: 1 }
     filtered.sort((a, b) => {
       let av = a[riskSortField]
       let bv = b[riskSortField]
@@ -245,41 +356,87 @@ function renderRiskTable(alerts) {
       if (av > bv) return riskSortDir === 'asc' ? 1 : -1
       return 0
     })
+  } else {
+    filtered.sort((a, b) => {
+      const lv = (levelRank[b.risk_level] || 0) - (levelRank[a.risk_level] || 0)
+      if (lv !== 0) return lv
+      if (b.risk_score !== a.risk_score) return b.risk_score - a.risk_score
+      return b.pred_prob - a.pred_prob
+    })
   }
 
   updateSortIcons()
-  document.getElementById('riskRowCount').textContent = `${filtered.length} record${filtered.length === 1 ? '' : 's'}`
+
+  const isActive = !!(activeRiskFilter || riskSearchTerm || riskSortField)
+  const cap = isActive ? HIGH_RISK_FILTERED_ROWS : HIGH_RISK_PREVIEW_ROWS
+  const shown = filtered.slice(0, cap)
+
+  document.getElementById('riskRowCount').textContent = isActive
+    ? `${filtered.length} matching record${filtered.length === 1 ? '' : 's'}${filtered.length > cap ? ` (showing ${cap})` : ''}`
+    : ''
 
   const tbody = document.getElementById('riskTable')
   tbody.innerHTML = ''
 
-  if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="py-6 text-center text-gray-500 text-sm">No matching records found.</td></tr>`
+  if (shown.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-500 text-sm">No matching records found.</td></tr>`
     return
   }
 
-  filtered.forEach(row => {
-    const lc = levelColor[row.risk_level]    || 'text-gray-300'
+  shown.forEach(row => {
+    const badge = levelBadge[row.risk_level] || 'bg-gray-700 text-gray-300 border border-gray-600'
     const sc = statusColor[row.alert_status] || 'text-gray-300'
     const tr = document.createElement('tr')
     tr.className = 'border-b border-gray-700'
     tr.innerHTML = `
-      <td class="py-2 pr-4 font-mono">
+      <td class="py-2.5 pr-4 font-mono">
         <a href="/record/${row.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline">#${row.record_id}</a>
       </td>
-      <td class="py-2 pr-4">${(row.pred_prob * 100).toFixed(1)}%</td>
-      <td class="py-2 pr-4">${row.risk_score}/100</td>
-      <td class="py-2 pr-4 font-bold ${lc}">${row.risk_level}</td>
-      <td class="py-2 pr-4 text-xs text-blue-300">${row.shap_explanation}</td>
-      <td class="py-2 pr-4">
-        <span class="${confClass(row.pred_prob)}">${confLabel(row.pred_prob)}</span>
-        <span class="text-gray-500 text-xs ml-1">${confPct(row.pred_prob)}</span>
+      <td class="py-2.5 pr-4 font-mono">
+        <a href="/assets/${row.asset_id}" class="text-gray-300 hover:text-white hover:underline" title="View asset ${row.machine_id}">${row.machine_id || '—'}</a>
       </td>
-      <td class="py-2 pr-4 text-xs text-gray-300">${row.action}</td>
-      <td class="py-2 text-xs font-semibold ${sc}">${row.alert_status.replace('_',' ')}</td>
+      <td class="py-2.5 pr-4">${(row.pred_prob * 100).toFixed(1)}%</td>
+      <td class="py-2.5 pr-4" title="Safety floor applied based on predicted failure probability.">${row.risk_score}/100</td>
+      <td class="py-2.5 pr-4">
+        <span class="text-[10px] font-bold tracking-wide px-1.5 py-0.5 rounded ${badge}">${row.risk_level.toUpperCase()}</span>
+      </td>
+      <td class="py-2.5 pr-4 text-xs text-gray-300">${row.action}</td>
+      <td class="py-2.5 text-xs font-semibold ${sc}">${row.alert_status.replace('_',' ')}</td>
     `
     tbody.appendChild(tr)
   })
+}
+
+let lastDistribution = null
+let lastTotalForLegend = null
+
+function renderRiskLegend(distribution, total) {
+  lastDistribution = distribution
+  lastTotalForLegend = total
+  const order = ['Low', 'Medium', 'High', 'Critical']
+  const byLevel = Object.fromEntries(distribution.map(d => [d.risk_level, d.count]))
+  const legend = document.getElementById('riskLegend')
+  legend.innerHTML = order
+    .filter(level => byLevel[level] !== undefined)
+    .map(level => {
+      const count = byLevel[level]
+      const pct = total > 0 ? ((count / total) * 100).toFixed(1) : '0.0'
+      const active = (activeRiskFilter && activeRiskFilter.type === 'level' && activeRiskFilter.value === level)
+        ? 'ring-1 ring-blue-500 rounded px-2 -mx-2' : ''
+      return `
+        <div class="flex items-center justify-between cursor-pointer py-1 ${active}" onclick="setRiskFilter('${level}')">
+          <span class="flex items-center gap-2.5 text-gray-300">
+            <span class="w-3 h-3 rounded-full shrink-0" style="background:${levelDot[level]}"></span>
+            ${level}
+          </span>
+          <span class="text-gray-300 font-medium tabular-nums">${count.toLocaleString()} <span class="text-gray-500 font-normal">(${pct}%)</span></span>
+        </div>`
+    }).join('')
+
+  const lowCount = byLevel['Low'] || 0
+  lastTotalRecords = total
+  lastLowPct = total > 0 ? ((lowCount / total) * 100).toFixed(1) : '0.0'
+  updateRiskSummaryLine()
 }
 
 async function loadShapImportance() {
@@ -291,11 +448,11 @@ async function loadShapImportance() {
       return
     }
     const data = await res.json()
-    const sorted = [...data.features].sort((a, b) => b.importance - a.importance)
+    const sorted = [...data.features].sort((a, b) => b.importance - a.importance).slice(0, 8)
     const labels = sorted.map(f => f.feature)
     const values = sorted.map(f => f.importance)
     document.getElementById('shapBarSubtitle').textContent =
-      `Average impact of each feature across ${data.total_predictions.toLocaleString()} test predictions`
+      `Mean absolute SHAP impact of each feature across ${data.total_predictions.toLocaleString()} test predictions`
     document.getElementById('shapBarMeta').textContent =
       `Model: ${data.model} · Last trained: ${new Date(data.trained_at).toLocaleString()}`
 
@@ -346,110 +503,120 @@ async function loadShapImportance() {
   }
 }
 
-let forcePlotChartInstance = null
+function buildLineSummary(lines) {
+  const total   = lines.length
+  const running = lines.filter(l => l.status === 'RUNNING').length
+  const warning = lines.filter(l => l.status === 'WARNING').length
+  const down    = lines.filter(l => l.status === 'DOWN').length
+  const parts = [`${running}/${total} Running`]
+  if (warning) parts.push(`${warning} Warning`)
+  if (down) parts.push(`${down} Down`)
+  return parts.join(' · ')
+}
 
-async function loadForcePlot() {
+async function loadAssetHealth() {
   try {
-    const res = await fetch('/api/shap/highest-risk')
-    if (!res.ok) {
-      document.getElementById('forceMeta').textContent = 'No SHAP data available.'
+    const [assets, lines] = await Promise.all([
+      fetch('/api/assets').then(r => r.json()),
+      fetch('/api/production-lines').then(r => r.json())
+    ])
+    if (assets.error || !Array.isArray(assets)) throw new Error(assets.error || 'bad assets payload')
+    if (lines.error || !Array.isArray(lines)) throw new Error(lines.error || 'bad lines payload')
+
+    document.getElementById('assets_monitored').textContent = assets.length
+    lastAssetsCount = assets.length
+    updateRiskSummaryLine()
+
+    const list = document.getElementById('productionLinesList')
+    const summary = document.getElementById('productionLinesSummary')
+    if (lines.length === 0) {
+      summary.textContent = 'No production lines configured.'
+      list.innerHTML = ''
       return
     }
-    const data = await res.json()
-
-    const top = data.features.slice(0, 15)
-    const labels = top.map(f => f.feature)
-    const values = top.map(f => f.shap_value)
-    const colors = values.map(v => v >= 0 ? '#ef4444' : '#60a5fa')
-
-    document.getElementById('forceRecordBadge').textContent = `#${data.record_id}`
-    document.getElementById('forceMeta').textContent =
-      `${data.risk_level} risk · ${(data.pred_prob * 100).toFixed(1)}% failure probability · Risk Score ${data.risk_score}/100`
-
-    const ctx = document.getElementById('forcePlotChart')
-
-    if (forcePlotChartInstance) {
-      forcePlotChartInstance.data.labels = labels
-      forcePlotChartInstance.data.datasets[0].data = values
-      forcePlotChartInstance.data.datasets[0].backgroundColor = colors
-      forcePlotChartInstance.update()
-      return
-    }
-
-    forcePlotChartInstance = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [{
-          label: 'SHAP value',
-          data: values,
-          backgroundColor: colors,
-          borderRadius: 3
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => {
-                const dir = ctx.raw >= 0 ? 'pushes toward failure' : 'pushes toward normal'
-                return `SHAP: ${ctx.raw.toFixed(4)} (${dir})`
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            ticks: { color: '#9ca3af' },
-            grid: { color: '#374151' },
-            title: { display: true, text: 'SHAP value (impact on model output)', color: '#9ca3af' }
-          },
-          y: {
-            ticks: { color: '#d1d5db' },
-            grid: { display: false }
-          }
-        }
-      }
-    })
+    summary.textContent = buildLineSummary(lines)
+    list.innerHTML = lines.map(line => {
+      const meta = lineStatusMeta[line.status] || { label: line.status, dot: 'bg-gray-500', text: 'text-gray-400' }
+      return `
+        <a href="/production-lines/${line.line_id}" class="flex items-center justify-between text-sm group py-0.5">
+          <span class="flex items-center gap-2 text-gray-300 group-hover:text-white">
+            <span class="w-2 h-2 rounded-full ${meta.dot}"></span>
+            ${line.line_name}
+          </span>
+          <span class="text-xs font-semibold ${meta.text}">${meta.label}</span>
+        </a>`
+    }).join('')
   } catch (err) {
-    console.error('Failed to load force plot:', err)
-    document.getElementById('forceMeta').textContent = 'Failed to load SHAP contribution data.'
+    console.error('Failed to load asset health:', err)
+    document.getElementById('productionLinesList').innerHTML =
+      '<p class="text-red-400 text-xs">Failed to load production line data.</p>'
   }
 }
 
 async function loadDashboard(isRefresh = false) {
   try {
-    // Summary cards
     const s = await fetch('/api/summary').then(r => r.json())
-    document.getElementById('total').textContent       = s.total_records
     document.getElementById('open_alerts').textContent = s.open_alerts
     document.getElementById('high_risk').textContent   = s.high_risk
+    document.getElementById('open_alerts_sub').textContent = `${s.open_alerts} alert${s.open_alerts === 1 ? '' : 's'} currently requiring attention`
+    document.getElementById('high_risk_sub').textContent   = `${s.high_risk} record${s.high_risk === 1 ? '' : 's'} classified high or critical risk`
 
-    const m = await fetch('/api/metrics').then(r => r.json())
-    document.getElementById('avg_score').textContent = m.avg_risk_score
+    try {
+      if (CURRENT_USER.role === 'technician') {
+        const my = await fetch('/api/work-orders/my-summary').then(r => r.json())
+        if (!my.error) {
+          document.getElementById('work_orders_card_label').textContent = 'My Work Orders'
+          document.getElementById('open_work_orders').textContent = my.my_pending
+          document.getElementById('open_work_orders_sub').textContent =
+            my.my_awaiting_verification > 0 ? `${my.my_awaiting_verification} awaiting verification`
+            : my.my_overdue > 0 ? `${my.my_overdue} overdue`
+            : 'work orders assigned to you'
+          document.getElementById('work_orders_card_link').textContent = 'View my work orders →'
+        }
+      } else {
+        const wo = await fetch('/api/work-orders/summary').then(r => r.json())
+        if (!wo.error) {
+          document.getElementById('open_work_orders').textContent = wo.open_work_orders
+          document.getElementById('open_work_orders_sub').textContent = wo.overdue_work_orders > 0
+            ? `${wo.overdue_work_orders} overdue`
+            : 'work orders awaiting completion'
+        }
+      }
+    } catch (e) {
+      console.error('Work order summary failed:', e)
+    }
 
-    // Donut chart
+    const critCount = (s.distribution.find(d => d.risk_level === 'Critical') || {}).count || 0
+    const highCount = (s.distribution.find(d => d.risk_level === 'High') || {}).count || 0
+    const critActive = activeRiskFilter && activeRiskFilter.type === 'level' && activeRiskFilter.value === 'Critical'
+    const highActive = activeRiskFilter && activeRiskFilter.type === 'level' && activeRiskFilter.value === 'High'
+    const openActive = activeRiskFilter && activeRiskFilter.type === 'status' && activeRiskFilter.value === 'OPEN'
+    document.getElementById('riskAlertsSummary').innerHTML =
+      `<span class="cursor-pointer hover:underline ${critActive ? 'text-red-400 font-semibold' : ''}" onclick="setRiskFilter('Critical')">${critCount.toLocaleString()} Critical</span>` +
+      ` · <span class="cursor-pointer hover:underline ${highActive ? 'text-orange-400 font-semibold' : ''}" onclick="setRiskFilter('High')">${highCount.toLocaleString()} High</span>` +
+      ` · <span class="cursor-pointer hover:underline ${openActive ? 'text-red-400 font-semibold' : ''}" onclick="setStatusFilter('OPEN')">${s.open_alerts.toLocaleString()} Open</span>`
+
     const labels = s.distribution.map(d => d.risk_level)
     const data   = s.distribution.map(d => d.count)
-    const colors = labels.map(l => ({
-      Critical: '#ef4444', High: '#f97316', Medium: '#eab308', Low: '#22c55e'
-    }[l] || '#6b7280'))
+    const colors = labels.map(l => levelDot[l] || '#6b7280')
+    renderRiskLegend(s.distribution, s.total_records)
 
     if (!riskChartInstance) {
       riskChartInstance = new Chart(document.getElementById('riskChart'), {
         type: 'doughnut',
         data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }] },
         options: {
-          plugins: { legend: { labels: { color: '#d1d5db' } } },
-          cutout: '65%',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => `${ctx.label}: ${ctx.raw.toLocaleString()}` } }
+          },
+          cutout: '66%',
           onClick: (evt, elements) => {
             if (elements.length > 0) {
               const idx = elements[0].index
-              const label = riskChartInstance.data.labels[idx]
-              setRiskFilter(label)
+              setRiskFilter(riskChartInstance.data.labels[idx])
             }
           },
           onHover: (evt, elements) => {
@@ -464,7 +631,6 @@ async function loadDashboard(isRefresh = false) {
       riskChartInstance.update()
     }
 
-    // Trend chart
     const t = await fetch('/api/trends').then(r => r.json())
     if (!trendChartInstance) {
       trendChartInstance = new Chart(document.getElementById('trendChart'), {
@@ -495,6 +661,8 @@ async function loadDashboard(isRefresh = false) {
           }]
         },
         options: {
+          responsive: true,
+          maintainAspectRatio: false,
           plugins: {
             legend: { labels: { color: '#d1d5db' } },
             tooltip: {
@@ -509,7 +677,7 @@ async function loadDashboard(isRefresh = false) {
             }
           },
           scales: {
-            x: { ticks: { color: '#6b7280' }, grid: { color: '#374151' } },
+            x: { ticks: { color: '#6b7280' }, grid: { color: '#374151' }, title: { display: true, text: 'Record ID', color: '#6b7280' } },
             y: { ticks: { color: '#6b7280' }, grid: { color: '#374151' }, min: 0 }
           },
           onClick: (evt, elements) => {
@@ -540,12 +708,9 @@ async function loadDashboard(isRefresh = false) {
       trendChartInstance.update()
     }
 
-    // High risk table
     const alerts = await fetch('/api/alerts').then(r => r.json())
-    lastAlerts = alerts
     renderRiskTable(alerts)
 
-    // ---- Toast logic ----
     const currentAlertIds = new Set(alerts.map(a => a.record_id))
 
     if (isRefresh && prevSummary) {
@@ -580,23 +745,39 @@ async function loadDashboard(isRefresh = false) {
     prevAlertIds = currentAlertIds
     prevSummary  = s
 
-    // ---- Health summary (small dots) ----
     try {
       const h = await fetch('/api/health').then(r => r.json())
       const dotClass = { healthy: 'bg-green-500', degraded: 'bg-yellow-500', down: 'bg-red-500' }
       const setDot = (prefix, status) => {
-        document.getElementById(`hs_${prefix}_dot`).className = `w-2.5 h-2.5 rounded-full ${dotClass[status] || 'bg-gray-600'}`
+        document.getElementById(`hs_${prefix}_dot`).className = `w-2 h-2 rounded-full ${dotClass[status] || 'bg-gray-600'}`
         document.getElementById(`hs_${prefix}_status`).textContent = (status || 'unknown').toUpperCase()
       }
       setDot('api', h.api.status)
       setDot('db', h.database.status)
       setDot('model', h.model.status)
       setDot('sys', h.system.status)
+
+      const serviceStatuses = [h.api.status, h.database.status, h.model.status, h.system.status]
+      const healthyCount = serviceStatuses.filter(s => s === 'healthy').length
+      document.getElementById('platformServicesSummary').textContent =
+        `${healthyCount} / ${serviceStatuses.length} Healthy`
+
+      document.getElementById('system_health_pct').textContent = `${h.health_score}%`
+
+      const overallMeta = {
+        healthy:  { dot: 'bg-green-500',  label: 'All systems healthy' },
+        degraded: { dot: 'bg-yellow-500', label: 'System degraded' },
+        down:     { dot: 'bg-red-500',    label: 'System down' }
+      }[h.overall_status] || { dot: 'bg-gray-500', label: 'Status unknown' }
+      const badge = document.getElementById('overallStatusBadge')
+      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${overallMeta.dot}"></span> ${overallMeta.label}`
     } catch (e) {
       console.error('Health summary failed:', e)
     }
 
-    // ---- Live stream toast ----
+    document.getElementById('lastUpdated').textContent =
+      new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
     if (isRefresh) {
       const streamRow = await fetch('/api/stream').then(r => r.json())
       if (streamRow && !streamRow.error && streamRow.record_id !== prevStreamRecordId) {
@@ -618,7 +799,8 @@ async function loadDashboard(isRefresh = false) {
 updateRiskFilterBadge()
 loadDashboard()
 loadShapImportance()
-loadForcePlot()
+loadAssetHealth()
 setInterval(() => loadDashboard(true), 10000)
+setInterval(() => loadAssetHealth(), 30000)
 </script>
 {% endblock %}

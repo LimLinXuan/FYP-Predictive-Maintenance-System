@@ -1,0 +1,358 @@
+{% extends "base.html" %}
+{% block content %}
+
+<a href="/work-orders" class="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-6 transition-colors">
+  ← Back to Work Orders
+</a>
+
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl font-bold">Work Order <span class="font-mono text-blue-400">#{{ wo_id }}</span></h1>
+  <div id="statusBadge" class="text-sm font-bold px-4 py-2 rounded-full bg-gray-800 text-gray-400">—</div>
+</div>
+
+<!-- Progress tracker -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6">
+  <div class="flex items-center justify-between text-xs" id="progressTracker"></div>
+</div>
+
+<div class="grid grid-cols-3 gap-6 mb-6">
+  <div class="bg-gray-800 rounded-xl p-5 col-span-2">
+    <h2 class="font-semibold text-gray-200 mb-4">Details</h2>
+    <div class="grid grid-cols-2 gap-4" id="detailGrid">
+      <p class="text-gray-500 text-sm col-span-2">Loading...</p>
+    </div>
+    <div class="mt-4">
+      <p class="text-gray-500 text-xs mb-1">Description</p>
+      <p class="text-gray-200 text-sm" id="descText">—</p>
+    </div>
+    <div class="mt-4">
+      <p class="text-gray-500 text-xs mb-1">Recommended Action</p>
+      <p class="text-gray-200 text-sm" id="actionText">—</p>
+    </div>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-4">Source Alert</h2>
+    <div id="sourceAlertCard">
+      <p class="text-gray-500 text-sm">No linked alert (manual work order).</p>
+    </div>
+  </div>
+</div>
+
+<!-- Technician Notes -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6" id="notesCard">
+  <h2 class="font-semibold text-gray-200 mb-3">Technician Notes</h2>
+  <p class="text-gray-500 text-xs mb-2">Diagnosis, observations, what you're doing while working the job.</p>
+  <div id="notesReadOnly" class="hidden text-gray-200 text-sm bg-gray-900/60 rounded-lg p-3 mb-3 whitespace-pre-wrap"></div>
+  <div id="notesEditor" class="hidden">
+    <textarea id="techNotesInput" rows="3" placeholder="e.g. Abnormal vibration detected during inspection. Bearing condition checked..."
+      class="w-full bg-gray-700 text-sm rounded px-3 py-2 mb-2"></textarea>
+    <button onclick="saveNotes()" class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-3 py-2 rounded-lg">Save Notes</button>
+  </div>
+  <p id="notesEmptyMsg" class="text-gray-600 text-sm hidden">No notes yet.</p>
+</div>
+
+<!-- Resolution -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6 hidden" id="resolutionCard">
+  <h2 class="font-semibold text-gray-200 mb-3">Resolution</h2>
+  <p class="text-gray-500 text-xs mb-2">Final outcome — what was actually replaced/repaired and the result.</p>
+  <p id="resolutionText" class="text-gray-200 text-sm bg-gray-900/60 rounded-lg p-3 whitespace-pre-wrap"></p>
+</div>
+
+<!-- Verification -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6 hidden" id="verificationCard">
+  <h2 class="font-semibold text-gray-200 mb-3">Verification</h2>
+  <div id="verificationReadOnly" class="hidden">
+    <p class="text-gray-500 text-xs mb-1" id="verificationMeta"></p>
+    <p id="verificationText" class="text-gray-200 text-sm bg-gray-900/60 rounded-lg p-3 whitespace-pre-wrap"></p>
+  </div>
+  <div id="verificationEditor" class="hidden">
+    <p class="text-gray-500 text-xs mb-2">Review the resolution above, then approve to close the loop or reject to send it back for rework.</p>
+    <textarea id="verificationNoteInput" rows="3" placeholder="e.g. Maintenance evidence reviewed. Machine operating normally after repair."
+      class="w-full bg-gray-700 text-sm rounded px-3 py-2 mb-2"></textarea>
+    <div class="flex gap-2">
+      <button onclick="submitVerification('approve')" class="bg-green-700 hover:bg-green-600 text-white text-sm px-3 py-2 rounded-lg">✓ Approve & Close</button>
+      <button onclick="submitVerification('reject')" class="bg-red-700 hover:bg-red-600 text-white text-sm px-3 py-2 rounded-lg">✗ Reject (send back)</button>
+    </div>
+  </div>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5">
+  <h2 class="font-semibold text-gray-200 mb-4">Actions</h2>
+  <div id="actionButtons" class="flex gap-2 flex-wrap"></div>
+</div>
+
+<!-- Complete modal -->
+<div id="completeModal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+  <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md">
+    <h2 class="text-lg font-semibold mb-2">Complete Work Order</h2>
+    <p class="text-gray-500 text-xs mb-3">Describe what was actually done to resolve this. Required before this WO can move to verification.</p>
+    <textarea id="resolutionInput" rows="4" placeholder="e.g. Replaced worn bearing and performed test run. Vibration returned to normal range."
+      class="w-full bg-gray-700 text-sm rounded px-3 py-2 mb-4"></textarea>
+    <div class="flex justify-end gap-2">
+      <button onclick="closeCompleteModal()" class="text-gray-400 hover:text-white text-sm px-3 py-2">Cancel</button>
+      <button onclick="submitComplete()" class="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg">Submit</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const WO_ID = {{ wo_id }}
+const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
+const priorityColor = { CRITICAL:'text-red-400', HIGH:'text-orange-400', MEDIUM:'text-yellow-400', LOW:'text-green-400' }
+const statusBadgeStyle = {
+  OPEN:                 'bg-red-900 border border-red-700 text-red-400',
+  ASSIGNED:             'bg-blue-900 border border-blue-700 text-blue-400',
+  ACCEPTED:             'bg-cyan-900 border border-cyan-700 text-cyan-400',
+  IN_PROGRESS:          'bg-yellow-900 border border-yellow-700 text-yellow-400',
+  PENDING_VERIFICATION: 'bg-purple-900 border border-purple-700 text-purple-400',
+  CLOSED:               'bg-green-900 border border-green-700 text-green-400',
+  CANCELLED:            'bg-gray-700 border border-gray-600 text-gray-400',
+}
+
+let currentWO = null
+const STAGES = ['OPEN', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'PENDING_VERIFICATION', 'CLOSED']
+const STAGE_LABELS = {
+  OPEN: 'Open', ASSIGNED: 'Assigned', ACCEPTED: 'Accepted',
+  IN_PROGRESS: 'In Progress', PENDING_VERIFICATION: 'Verification', CLOSED: 'Closed'
+}
+
+function field(label, value) {
+  return `<div><p class="text-gray-500 text-xs mb-1">${label}</p><p class="text-gray-100 font-semibold">${value ?? '—'}</p></div>`
+}
+
+function renderProgressTracker(status) {
+  const wrap = document.getElementById('progressTracker')
+  if (status === 'CANCELLED') {
+    wrap.innerHTML = `<span class="text-gray-500 font-semibold">This work order was cancelled.</span>`
+    return
+  }
+  const currentIdx = STAGES.indexOf(status)
+  wrap.innerHTML = STAGES.map((s, i) => {
+    const done = currentIdx >= 0 && i < currentIdx
+    const isCurrent = i === currentIdx
+    let dot = 'bg-gray-600'
+    if (done) dot = 'bg-green-500'
+    if (isCurrent) dot = s === 'CLOSED' ? 'bg-green-500' : 'bg-blue-500 animate-pulse ring-4 ring-blue-500/30'
+    const text = (done || isCurrent) ? 'text-gray-200 font-semibold' : 'text-gray-600'
+    const connector = i < STAGES.length - 1
+      ? `<div class="flex-1 h-0.5 mx-2 ${i < currentIdx ? 'bg-green-500' : 'bg-gray-700'}"></div>` : ''
+    return `<div class="flex items-center flex-1">
+        <div class="flex flex-col items-center gap-1">
+          <span class="w-3 h-3 rounded-full ${dot}"></span>
+          <span class="${text}">${STAGE_LABELS[s]}</span>
+        </div>
+        ${connector}
+      </div>`
+  }).join('')
+}
+
+async function load() {
+  const data = await fetch(`/api/work-orders/${WO_ID}`).then(r => r.json())
+  if (data.error) {
+    document.querySelector('main').innerHTML = `<p class="text-red-400 text-center mt-20">${data.error}</p>`
+    return
+  }
+  currentWO = data
+
+  const badge = document.getElementById('statusBadge')
+  badge.className = `text-sm font-bold px-4 py-2 rounded-full ${statusBadgeStyle[data.status] || 'bg-gray-800 text-gray-400'}`
+  badge.textContent = data.status.replace(/_/g,' ')
+
+  renderProgressTracker(data.status)
+
+  const pc = priorityColor[data.priority] || 'text-gray-300'
+  document.getElementById('detailGrid').innerHTML = [
+    field('Priority', `<span class="${pc}">${data.priority}</span>`),
+    field('Machine', data.machine_id ? `<span class="font-mono">${data.machine_id}</span>` : '—'),
+    field('Assignee', data.assigned_to || 'Unassigned'),
+    field('Created by', data.created_by),
+    field('Due Date', data.due_date ? new Date(data.due_date).toLocaleString() : '—'),
+    field('Created At', new Date(data.created_at).toLocaleString()),
+    field('Accepted At', data.accepted_at ? new Date(data.accepted_at).toLocaleString() : '—'),
+    field('Started At', data.started_at ? new Date(data.started_at).toLocaleString() : '—'),
+    field('Completed At', data.completed_at ? new Date(data.completed_at).toLocaleString() : '—'),
+    field('Verified At', data.verified_at ? new Date(data.verified_at).toLocaleString() : '—'),
+  ].join('')
+
+  document.getElementById('descText').textContent = data.description || '—'
+  document.getElementById('actionText').textContent = data.recommended_action || '—'
+
+  if (data.source_alert) {
+    const a = data.source_alert
+    document.getElementById('sourceAlertCard').innerHTML = `
+      <a href="/record/${a.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-mono font-bold">#${a.record_id}</a>
+      <p class="text-sm mt-2"><span class="text-gray-500">Risk:</span> <span class="font-semibold">${a.risk_level}</span> (${a.risk_score}/100)</p>
+      <p class="text-xs text-gray-400 mt-2">${a.shap_explanation || ''}</p>
+    `
+  }
+
+  renderNotes()
+  renderResolution()
+  renderVerification()
+  renderActions()
+}
+
+function renderNotes() {
+  const isMine = currentWO.assigned_to === CURRENT_USER.username
+  const canEdit = isMine && ['ACCEPTED', 'IN_PROGRESS'].includes(currentWO.status)
+  const readOnly = document.getElementById('notesReadOnly')
+  const editor = document.getElementById('notesEditor')
+  const emptyMsg = document.getElementById('notesEmptyMsg')
+
+  readOnly.classList.add('hidden')
+  editor.classList.add('hidden')
+  emptyMsg.classList.add('hidden')
+
+  if (canEdit) {
+    editor.classList.remove('hidden')
+    document.getElementById('techNotesInput').value = currentWO.technician_notes || ''
+  } else if (currentWO.technician_notes) {
+    readOnly.textContent = currentWO.technician_notes
+    readOnly.classList.remove('hidden')
+  } else {
+    emptyMsg.classList.remove('hidden')
+  }
+}
+
+function renderResolution() {
+  const card = document.getElementById('resolutionCard')
+  if (currentWO.resolution_note) {
+    card.classList.remove('hidden')
+    document.getElementById('resolutionText').textContent = currentWO.resolution_note
+  } else {
+    card.classList.add('hidden')
+  }
+}
+
+function renderVerification() {
+  const card = document.getElementById('verificationCard')
+  const readOnly = document.getElementById('verificationReadOnly')
+  const editor = document.getElementById('verificationEditor')
+  const canVerify = (CURRENT_USER.role === 'admin' || currentWO.created_by === CURRENT_USER.username)
+
+  card.classList.add('hidden')
+  readOnly.classList.add('hidden')
+  editor.classList.add('hidden')
+
+  if (currentWO.status === 'PENDING_VERIFICATION' && canVerify) {
+    card.classList.remove('hidden')
+    editor.classList.remove('hidden')
+  } else if (currentWO.verified_by) {
+    card.classList.remove('hidden')
+    readOnly.classList.remove('hidden')
+    document.getElementById('verificationMeta').textContent =
+      `${currentWO.status === 'CLOSED' ? 'Approved' : 'Reviewed'} by ${currentWO.verified_by} on ${new Date(currentWO.verified_at).toLocaleString()}`
+    document.getElementById('verificationText').textContent = currentWO.verification_note || '(no note)'
+  }
+}
+
+function renderActions() {
+  const wrap = document.getElementById('actionButtons')
+  const s = currentWO.status
+  const isAdmin = CURRENT_USER.role === 'admin'
+  const isMine = currentWO.assigned_to === CURRENT_USER.username
+  let html = ''
+
+  if (!currentWO.assigned_to && !isAdmin) {
+    html += `<button onclick="claimWO()" class="bg-purple-700 hover:bg-purple-600 text-white text-sm px-3 py-2 rounded-lg">Claim</button>`
+  }
+
+  if (isMine && s === 'ASSIGNED') {
+    html += `<button onclick="acceptWO()" class="bg-cyan-700 hover:bg-cyan-600 text-white text-sm px-3 py-2 rounded-lg">Accept</button>`
+  }
+
+  if ((isAdmin || isMine) && s === 'ACCEPTED') {
+    html += `<button onclick="startWO()" class="bg-yellow-700 hover:bg-yellow-600 text-white text-sm px-3 py-2 rounded-lg">Start Work</button>`
+  }
+
+  if ((isAdmin || isMine) && ['ACCEPTED', 'IN_PROGRESS'].includes(s)) {
+    html += `<button onclick="openCompleteModal()" class="bg-green-700 hover:bg-green-600 text-white text-sm px-3 py-2 rounded-lg">Mark Completed</button>`
+  }
+
+  if (isAdmin && !['CLOSED', 'CANCELLED'].includes(s)) {
+    html += `<button onclick="cancelWO()" class="bg-gray-600 hover:bg-gray-500 text-white text-sm px-3 py-2 rounded-lg">Cancel</button>`
+  }
+
+  wrap.innerHTML = html || '<p class="text-gray-500 text-sm">No actions available.</p>'
+}
+
+async function claimWO() {
+  const res = await fetch(`/api/work-orders/${WO_ID}/assign`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ technician: CURRENT_USER.username })
+  })
+  const data = await res.json()
+  if (res.ok) { showToast('✅ Claimed', 'info'); load() } else { alert(data.error) }
+}
+
+async function acceptWO() {
+  const res = await fetch(`/api/work-orders/${WO_ID}/accept`, { method: 'POST' })
+  const data = await res.json()
+  if (res.ok) { showToast('✅ Accepted', 'info'); load() } else { alert(data.error) }
+}
+
+async function startWO() {
+  const res = await fetch(`/api/work-orders/${WO_ID}/start`, { method: 'POST' })
+  const data = await res.json()
+  if (res.ok) { showToast('▶ Work started', 'info'); load() } else { alert(data.error) }
+}
+
+async function saveNotes() {
+  const technician_notes = document.getElementById('techNotesInput').value
+  const res = await fetch(`/api/work-orders/${WO_ID}/notes`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ technician_notes })
+  })
+  const data = await res.json()
+  if (res.ok) { showToast('✅ Notes saved', 'info') } else { alert(data.error) }
+}
+
+function openCompleteModal() {
+  document.getElementById('resolutionInput').value = ''
+  document.getElementById('completeModal').classList.remove('hidden')
+}
+function closeCompleteModal() { document.getElementById('completeModal').classList.add('hidden') }
+
+async function submitComplete() {
+  const resolution_note = document.getElementById('resolutionInput').value.trim()
+  if (!resolution_note) { alert('Please describe the resolution before completing.'); return }
+  const res = await fetch(`/api/work-orders/${WO_ID}/complete`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ resolution_note })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    closeCompleteModal()
+    showToast('✅ Marked complete — pending verification', 'info')
+    load()
+  } else { alert(data.error) }
+}
+
+async function submitVerification(decision) {
+  const verification_note = document.getElementById('verificationNoteInput').value.trim()
+  if (decision === 'reject' && !confirm('Send this work order back to the technician for rework?')) return
+  const res = await fetch(`/api/work-orders/${WO_ID}/verify`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ decision, verification_note })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    showToast(decision === 'approve' ? '✅ Approved & closed' : '↩ Sent back for rework', 'info')
+    load()
+  } else { alert(data.error) }
+}
+
+async function cancelWO() {
+  if (!confirm('Cancel this work order?')) return
+  const res = await fetch(`/api/work-orders/${WO_ID}/status`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ status: 'CANCELLED' })
+  })
+  const data = await res.json()
+  if (res.ok) { showToast('Work order cancelled', 'info'); load() } else { alert(data.error) }
+}
+
+load()
+</script>
+{% endblock %}

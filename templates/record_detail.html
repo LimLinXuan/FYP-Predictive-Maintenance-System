@@ -18,6 +18,17 @@
   </div>
 </div>
 
+<!-- Asset / Production Line info -->
+<div class="bg-gray-800 rounded-xl p-5 mb-6" id="assetInfoCard">
+  <div class="flex items-center justify-between mb-1">
+    <h2 class="font-semibold text-gray-200">Asset Information</h2>
+    <span class="text-xs text-gray-500">Simulated asset/line metadata</span>
+  </div>
+  <div id="assetInfoBody" class="grid grid-cols-4 gap-4 mt-3">
+    <p class="text-gray-500 text-sm col-span-4">Loading asset information...</p>
+  </div>
+</div>
+
 <!-- Top row: Risk summary cards -->
 <div class="grid grid-cols-3 gap-4 mb-6" id="summaryCards">
   <div class="bg-gray-800 rounded-xl p-5">
@@ -558,6 +569,54 @@ function renderResolutionCard(data) {
       : (data.alert_status === 'FALSE_POSITIVE' ? 'No note provided — marked as false positive.' : 'No note provided.')
 }
 
+function renderAssetInfo(asset) {
+  const body = document.getElementById('assetInfoBody')
+
+  if (!asset) {
+    body.innerHTML = `<p class="text-gray-500 text-sm col-span-4">No asset mapping found for this record.</p>`
+    return
+  }
+
+  const criticalityColor = {
+    HIGH:   'text-red-400',
+    MEDIUM: 'text-yellow-400',
+    LOW:    'text-green-400'
+  }[asset.criticality] || 'text-gray-300'
+
+  const statusColorMap = {
+    RUNNING:     'text-green-400',
+    WARNING:     'text-yellow-400',
+    MAINTENANCE: 'text-orange-400',
+    DOWN:        'text-red-400'
+  }
+  const assetStatusCls = statusColorMap[asset.status] || 'text-gray-300'
+
+  body.innerHTML = `
+    <div>
+      <p class="text-gray-500 text-xs mb-1">Asset</p>
+      <a href="/assets/${asset.asset_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-semibold">
+        ${asset.asset_id}
+      </a>
+      <p class="text-gray-400 text-xs mt-0.5">${asset.machine_name || '—'}</p>
+    </div>
+    <div>
+      <p class="text-gray-500 text-xs mb-1">Production Line</p>
+      <a href="/production-lines/${asset.line_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-semibold">
+        ${asset.line_id}
+      </a>
+    </div>
+    <div>
+      <p class="text-gray-500 text-xs mb-1">Location</p>
+      <p class="text-gray-100 font-semibold">${asset.location || '—'}</p>
+    </div>
+    <div>
+      <p class="text-gray-500 text-xs mb-1">Criticality</p>
+      <p class="font-semibold ${criticalityColor}">${asset.criticality || '—'}</p>
+      <p class="text-xs mt-0.5 ${assetStatusCls}">${asset.status || '—'}</p>
+    </div>
+  `
+}
+
 function renderPipeline(data) {
   pipelineData = data
   renderScoreBuildup(computePipeline(data), data)
@@ -739,8 +798,10 @@ async function load() {
   renderPipelineSummarySentence(data)
   renderStatusButtons(data.alert_status, currentAssignedTo)
   renderResolutionCard(data)
+  renderAssetInfo(data.asset)
   loadHistory()
 }
+
 
 function renderStatusButtons(currentStatus, assignedTo) {
   const container = document.getElementById('statusButtons')

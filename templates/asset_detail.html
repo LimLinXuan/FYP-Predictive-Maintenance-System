@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block content %}
+
+<a href="/assets" class="inline-flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-6 transition-colors">
+  ← Back to Assets
+</a>
+
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">
+      Asset <span class="font-mono text-blue-400" id="assetIdHeader">{{ asset_id }}</span>
+    </h1>
+    <p class="text-gray-400 text-sm mt-1" id="assetSubheader">Loading...</p>
+  </div>
+  <div id="assetStatusBadge" class="text-sm font-bold px-4 py-2 rounded-full bg-gray-800 text-gray-400">—</div>
+</div>
+
+<div class="grid grid-cols-3 gap-6 mb-6">
+
+  <div class="bg-gray-800 rounded-xl p-5 col-span-2">
+    <h2 class="font-semibold text-gray-200 mb-4">Asset Details</h2>
+    <div class="grid grid-cols-2 gap-4" id="assetDetailGrid">
+      <p class="text-gray-500 text-sm col-span-2">Loading...</p>
+    </div>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-5">
+    <h2 class="font-semibold text-gray-200 mb-4">Production Line</h2>
+    <div id="lineCard">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-semibold text-gray-200">Recent Observations</h2>
+    <span class="text-gray-500 text-xs" id="observationsMeta"></span>
+  </div>
+  <div id="observationsContainer">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<div class="bg-gray-800 rounded-xl p-5 mt-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-semibold text-gray-200">Work Orders</h2>
+    <span class="text-gray-500 text-xs" id="woMeta"></span>
+  </div>
+  <div id="workOrdersContainer">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<script>
+const ASSET_ID = "{{ asset_id }}"
+
+const CRITICALITY_COLOR = {
+  HIGH:   'text-red-400',
+  MEDIUM: 'text-yellow-400',
+  LOW:    'text-green-400'
+}
+const ASSET_STATUS_STYLE = {
+  RUNNING:     { text: 'text-green-400',  bg: 'bg-green-900 border border-green-700' },
+  WARNING:     { text: 'text-yellow-400', bg: 'bg-yellow-900 border border-yellow-700' },
+  MAINTENANCE: { text: 'text-orange-400', bg: 'bg-orange-900 border border-orange-700' },
+  DOWN:        { text: 'text-red-400',    bg: 'bg-red-900 border border-red-700' }
+}
+const LINE_STATUS_COLOR = {
+  RUNNING: 'text-green-400',
+  WARNING: 'text-yellow-400',
+  DOWN:    'text-red-400'
+}
+const RISK_LEVEL_COLOR = {
+  Critical: 'text-red-400',
+  High:     'text-orange-400',
+  Medium:   'text-yellow-400',
+  Low:      'text-green-400'
+}
+const ALERT_STATUS_STYLE = {
+  OPEN:           'bg-red-900 border border-red-700 text-red-400',
+  ASSIGNED:       'bg-yellow-900 border border-yellow-700 text-yellow-400',
+  IN_PROGRESS:    'bg-blue-900 border border-blue-700 text-blue-400',
+  RESOLVED:       'bg-green-900 border border-green-700 text-green-400',
+  FALSE_POSITIVE: 'bg-gray-700 border border-gray-600 text-gray-300',
+  OK:             'bg-gray-700 border border-gray-600 text-gray-400'
+}
+const WO_PRIORITY_COLOR = {
+  CRITICAL: 'text-red-400',
+  HIGH:     'text-orange-400',
+  MEDIUM:   'text-yellow-400',
+  LOW:      'text-green-400'
+}
+const WO_STATUS_STYLE = {
+  OPEN:        'bg-red-900 border border-red-700 text-red-400',
+  ASSIGNED:    'bg-blue-900 border border-blue-700 text-blue-400',
+  IN_PROGRESS: 'bg-yellow-900 border border-yellow-700 text-yellow-400',
+  COMPLETED:   'bg-green-900 border border-green-700 text-green-400',
+  CANCELLED:   'bg-gray-700 border border-gray-600 text-gray-400'
+}
+
+function fmtDueShort(dateStr) {
+  if (!dateStr) return '—'
+  const d = new Date(dateStr)
+  const overdue = d < new Date()
+  return `<span class="${overdue ? 'text-red-400 font-semibold' : 'text-gray-400'}">${d.toLocaleDateString()}</span>`
+}
+
+function workOrderRow(wo) {
+  const pc = WO_PRIORITY_COLOR[wo.priority] || 'text-gray-300'
+  const sc = WO_STATUS_STYLE[wo.status] || 'bg-gray-700 border border-gray-600 text-gray-400'
+  return `
+    <tr class="border-b border-gray-700 last:border-0 hover:bg-gray-750">
+      <td class="py-2 pr-4">
+        <a href="/work-orders/${wo.wo_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-mono">#${wo.wo_id}</a>
+      </td>
+      <td class="py-2 pr-4 text-gray-200">${wo.title}</td>
+      <td class="py-2 pr-4 font-bold ${pc}">${wo.priority}</td>
+      <td class="py-2 pr-4">
+        <span class="text-xs font-bold px-2 py-1 rounded-full ${sc}">${wo.status.replace('_',' ')}</span>
+      </td>
+      <td class="py-2 pr-4 text-xs text-gray-400">${wo.assigned_to || 'Unassigned'}</td>
+      <td class="py-2 pr-4 text-xs">${fmtDueShort(wo.due_date)}</td>
+      <td class="py-2 text-xs">${wo.record_id ? `<span class="text-purple-300">Alert #${wo.record_id}</span>` : '<span class="text-gray-500">Manual</span>'}</td>
+    </tr>`
+}
+
+async function loadWorkOrders() {
+  const container = document.getElementById('workOrdersContainer')
+  const meta = document.getElementById('woMeta')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/work-orders`).then(r => r.json())
+    if (data.error) {
+      container.innerHTML = `<p class="text-gray-500 text-sm">${data.error}</p>`
+      return
+    }
+    if (!data.length) {
+      container.innerHTML = `<p class="text-gray-500 text-sm">No work orders for this machine yet.</p>`
+      return
+    }
+    meta.textContent = `${data.length} total`
+    container.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left">
+          <thead>
+            <tr class="text-gray-500 text-xs uppercase border-b border-gray-700">
+              <th class="py-2 pr-4">WO ID</th>
+              <th class="py-2 pr-4">Title</th>
+              <th class="py-2 pr-4">Priority</th>
+              <th class="py-2 pr-4">Status</th>
+              <th class="py-2 pr-4">Assignee</th>
+              <th class="py-2 pr-4">Due</th>
+              <th class="py-2 pr-4">Source</th>
+            </tr>
+          </thead>
+          <tbody>${data.map(workOrderRow).join('')}</tbody>
+        </table>
+      </div>`
+  } catch (err) {
+    console.error('Failed to load work orders:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load work orders.</p>`
+  }
+}
+
+function detailField(label, value) {
+  return `
+    <div>
+      <p class="text-gray-500 text-xs mb-1">${label}</p>
+      <p class="text-gray-100 font-semibold">${value ?? '—'}</p>
+    </div>`
+}
+
+function fmtNum(v, digits = 1) {
+  return (v === null || v === undefined) ? '—' : Number(v).toFixed(digits)
+}
+
+function observationRow(row) {
+  const riskCls = RISK_LEVEL_COLOR[row.risk_level] || 'text-gray-300'
+  const statusCls = ALERT_STATUS_STYLE[row.alert_status] || 'bg-gray-700 border border-gray-600 text-gray-400'
+  return `
+    <tr class="border-b border-gray-700 last:border-0 hover:bg-gray-750">
+      <td class="py-2 pr-4">
+        <a href="/record/${row.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-mono">
+          #${row.record_id}
+        </a>
+      </td>
+      <td class="py-2 pr-4 text-gray-400 text-xs whitespace-nowrap">${row.timestamp ?? '—'}</td>
+      <td class="py-2 pr-4 text-gray-200">${fmtNum(row.process_temp)} K</td>
+      <td class="py-2 pr-4 text-gray-200">${fmtNum(row.rpm, 0)} rpm</td>
+      <td class="py-2 pr-4 text-gray-200">${fmtNum(row.torque)} Nm</td>
+      <td class="py-2 pr-4 text-gray-200">${fmtNum(row.tool_wear, 0)} min</td>
+      <td class="py-2 pr-4 font-semibold ${riskCls}">${row.risk_level ?? '—'}</td>
+      <td class="py-2 pr-4">
+        <span class="text-xs font-bold px-2 py-1 rounded-full ${statusCls}">${row.alert_status ?? '—'}</span>
+      </td>
+    </tr>`
+}
+
+async function loadObservations() {
+  const container = document.getElementById('observationsContainer')
+  const meta = document.getElementById('observationsMeta')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/observations?limit=20`).then(r => r.json())
+    if (data.error) {
+      container.innerHTML = `<p class="text-gray-500 text-sm">${data.error}</p>`
+      return
+    }
+    if (!data.observations || data.observations.length === 0) {
+      container.innerHTML = `<p class="text-gray-500 text-sm">No observations found for this asset yet.</p>`
+      return
+    }
+
+    meta.textContent = `${data.count} shown — machine ${data.machine_id}`
+    container.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left">
+          <thead>
+            <tr class="text-gray-500 text-xs uppercase border-b border-gray-700">
+              <th class="py-2 pr-4">Record</th>
+              <th class="py-2 pr-4">Timestamp</th>
+              <th class="py-2 pr-4">Process Temp</th>
+              <th class="py-2 pr-4">RPM</th>
+              <th class="py-2 pr-4">Torque</th>
+              <th class="py-2 pr-4">Tool Wear</th>
+              <th class="py-2 pr-4">Risk</th>
+              <th class="py-2 pr-4">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.observations.map(observationRow).join('')}
+          </tbody>
+        </table>
+      </div>`
+  } catch (err) {
+    console.error('Failed to load observations:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load observations.</p>`
+  }
+}
+
+async function load() {
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}`).then(r => r.json())
+    if (data.error) {
+      document.querySelector('main').innerHTML =
+        `<p class="text-red-400 text-center mt-20 text-lg">Asset ${ASSET_ID} not found.</p>`
+      return
+    }
+
+    document.getElementById('assetIdHeader').textContent = data.asset_id
+    document.getElementById('assetSubheader').textContent =
+      `${data.machine_name} — ${data.machine_id}`
+
+    const style = ASSET_STATUS_STYLE[data.status] || { text: 'text-gray-400', bg: 'bg-gray-800' }
+    const badge = document.getElementById('assetStatusBadge')
+    badge.className = `text-sm font-bold px-4 py-2 rounded-full ${style.bg} ${style.text}`
+    badge.textContent = data.status
+
+    const critCls = CRITICALITY_COLOR[data.criticality] || 'text-gray-300'
+    document.getElementById('assetDetailGrid').innerHTML = [
+      detailField('Machine ID', `<span class="font-mono">${data.machine_id}</span>`),
+      detailField('Machine Type', data.machine_type),
+      detailField('Manufacturer', data.manufacturer),
+      detailField('Model', data.model),
+      detailField('Location', data.location),
+      `<div>
+        <p class="text-gray-500 text-xs mb-1">Criticality</p>
+        <p class="font-semibold ${critCls}">${data.criticality || '—'}</p>
+      </div>`
+    ].join('')
+
+    const line = data.line
+    const lineCard = document.getElementById('lineCard')
+    if (line) {
+      const lineCls = LINE_STATUS_COLOR[line.status] || 'text-gray-400'
+      lineCard.innerHTML = `
+        <a href="/production-lines/${line.line_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-mono font-bold text-lg">
+          ${line.line_id}
+        </a>
+        <p class="text-gray-200 text-sm mt-1">${line.line_name}</p>
+        <p class="text-gray-500 text-xs mt-1">${line.location || '—'}</p>
+        <p class="text-sm font-semibold mt-3 ${lineCls}">${line.status}</p>
+      `
+    } else {
+      lineCard.innerHTML = `<p class="text-gray-500 text-sm">No production line found for this asset.</p>`
+    }
+  } catch (err) {
+    console.error('Failed to load asset detail:', err)
+    document.querySelector('main').innerHTML =
+      `<p class="text-red-400 text-center mt-20 text-lg">Failed to load asset.</p>`
+  }
+}
+
+load()
+loadObservations()
+loadWorkOrders()
+</script>
+{% endblock %}

@@ -3,12 +3,20 @@
 
 <div class="flex justify-between items-center mb-2">
   <h1 class="text-2xl font-bold">Alert Management</h1>
-  <a href="/api/export/csv"
-     class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
-    ⬇ Export High-Risk CSV
-  </a>
+  <div class="flex items-center gap-3">
+    <select id="limitSelect" onchange="handlePageSizeChange()"
+      class="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5">
+      <option value="50">50 records</option>
+      <option value="100">100 records</option>
+      <option value="200">200 records</option>
+    </select>
+    <a href="/api/export/csv"
+       class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+      ⬇ Export High-Risk CSV
+    </a>
+  </div>
 </div>
-<p class="text-gray-400 text-sm mb-6">High and Critical risk records requiring technician action.</p>
+<p class="text-gray-400 text-sm mb-6">Manage detected alerts requiring technician review and action.</p>
 
 <!-- Status filter bar -->
 <div class="flex gap-2 mb-5">
@@ -26,6 +34,15 @@
   <button onclick="filterOwner('ALL')" class="filter-btn" id="btn-owner-ALL">All Alerts</button>
 </div>
 {% endif %}
+
+<!-- Risk level filter bar -->
+<div class="flex gap-2 mb-5">
+  <button onclick="filterLevel('ALL')"      class="filter-btn active" id="btn-level-ALL">All Levels</button>
+  <button onclick="filterLevel('Critical')" class="filter-btn" id="btn-level-Critical">Critical</button>
+  <button onclick="filterLevel('High')"     class="filter-btn" id="btn-level-High">High</button>
+  <button onclick="filterLevel('Medium')"   class="filter-btn" id="btn-level-Medium">Medium</button>
+  <button onclick="filterLevel('Low')"      class="filter-btn" id="btn-level-Low">Low</button>
+</div>
 
 <div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
   <table class="w-full text-sm">
@@ -46,6 +63,12 @@
     <tbody id="alertTable"></tbody>
   </table>
   <p id="emptyMsg" class="text-gray-500 text-center py-6 hidden">No alerts match this filter.</p>
+
+  <!-- Pagination Controls -->
+  <div id="paginationBar" class="flex flex-col sm:flex-row justify-between items-center gap-4 mt-6 pt-4 border-t border-gray-700 text-sm text-gray-400">
+    <div id="pageInfo">Showing 0–0 of 0 records</div>
+    <div class="flex items-center gap-1" id="paginationBtns"></div>
+  </div>
 </div>
 
 <style>
@@ -92,9 +115,14 @@ function confClass(prob) {
 const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_user.username }}" }
 
 let allAlerts = []
+let filteredAlerts = []
 let ownerFilter = 'MINE'   // only relevant for technician
 let statusFilterVal = 'ALL'
+let levelFilterVal = 'ALL'
 let technicianList = []
+
+let currentPage = 1
+let pageSize = 50
 
 async function load() {
   allAlerts = await fetch('/api/alerts').then(r => r.json())
@@ -102,6 +130,87 @@ async function load() {
     technicianList = await fetch('/api/technicians').then(r => r.json())
   }
   applyFilters()
+}
+
+function handlePageSizeChange() {
+  pageSize = parseInt(document.getElementById('limitSelect').value)
+  currentPage = 1
+  renderCurrentPage()
+}
+
+function goToPage(page) {
+  currentPage = page
+  renderCurrentPage()
+}
+
+function renderCurrentPage() {
+  const total = filteredAlerts.length
+  const totalPages = Math.ceil(total / pageSize) || 1
+
+  if (currentPage > totalPages) currentPage = totalPages
+  if (currentPage < 1) currentPage = 1
+
+  const startIdx = (currentPage - 1) * pageSize
+  const endIdx   = Math.min(startIdx + pageSize, total)
+  const pageRows = filteredAlerts.slice(startIdx, endIdx)
+
+  renderTable(pageRows)
+  renderPagination(total, totalPages, startIdx, endIdx)
+}
+
+function renderPagination(total, totalPages, startIdx, endIdx) {
+  const info = document.getElementById('pageInfo')
+  const btns = document.getElementById('paginationBtns')
+
+  if (total === 0) {
+    info.textContent = 'Showing 0–0 of 0 records'
+    btns.innerHTML = ''
+    return
+  }
+
+  info.textContent = `Showing ${(startIdx + 1).toLocaleString()}–${endIdx.toLocaleString()} of ${total.toLocaleString()} records`
+
+  let html = ''
+
+  // Previous Button
+  if (currentPage > 1) {
+    html += `<button onclick="goToPage(${currentPage - 1})" class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">← Previous</button>`
+  } else {
+    html += `<button disabled class="px-2.5 py-1 bg-gray-800 text-gray-600 rounded cursor-not-allowed">← Previous</button>`
+  }
+
+  // Page Numbers with Ellipsis
+  const pages = []
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i)
+  } else {
+    pages.push(1)
+    if (currentPage > 3) pages.push('...')
+    const start = Math.max(2, currentPage - 1)
+    const end = Math.min(totalPages - 1, currentPage + 1)
+    for (let i = start; i <= end; i++) pages.push(i)
+    if (currentPage < totalPages - 2) pages.push('...')
+    pages.push(totalPages)
+  }
+
+  pages.forEach(p => {
+    if (p === '...') {
+      html += `<span class="px-2 text-gray-500">…</span>`
+    } else if (p === currentPage) {
+      html += `<button class="px-3 py-1 bg-blue-600 text-white rounded font-bold">${p}</button>`
+    } else {
+      html += `<button onclick="goToPage(${p})" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">${p}</button>`
+    }
+  })
+
+  // Next Button
+  if (currentPage < totalPages) {
+    html += `<button onclick="goToPage(${currentPage + 1})" class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-200">Next →</button>`
+  } else {
+    html += `<button disabled class="px-2.5 py-1 bg-gray-800 text-gray-600 rounded cursor-not-allowed">Next →</button>`
+  }
+
+  btns.innerHTML = html
 }
 
 function renderTable(data) {
@@ -138,12 +247,12 @@ function renderTable(data) {
         </div>
       </td>
       <td class="py-3 pr-4">${(row.pred_prob * 100).toFixed(1)}%</td>
-      <td class="py-3 pr-4 text-xs text-blue-300 max-w-xs">${row.shap_explanation}</td>
-      <td class="py-3 pr-4 text-xs text-gray-400 max-w-xs">${row.reasons}</td>
       <td class="py-3 pr-4">
         <span class="${confClass(row.pred_prob)}">${confLabel(row.pred_prob)}</span>
         <span class="text-gray-500 text-xs ml-1">${confPct(row.pred_prob)}</span>
       </td>
+      <td class="py-3 pr-4 text-xs text-blue-300 max-w-xs">${row.shap_explanation}</td>
+      <td class="py-3 pr-4 text-xs text-gray-400 max-w-xs">${row.reasons}</td>
       <td class="py-3 pr-4" id="status-${row.record_id}">
         <span class="${sc} font-semibold text-xs">${row.alert_status.replace('_',' ')}</span>
       </td>
@@ -180,7 +289,15 @@ function buildActionButtons(row) {
   const isMine = row.assigned_to === CURRENT_USER.username
   const closed = (s === 'RESOLVED' || s === 'FALSE_POSITIVE')
 
-  let html = '<div class="flex gap-1 flex-wrap">'
+  let html = '<div class="flex gap-1 flex-wrap items-center">'
+
+  // Low risk + not yet assigned + still open → default recommendation is
+  // "Monitor" rather than pushing technicians to act. This is a visual
+  // hint only — it never blocks the assign/claim controls below, so a
+  // technician can still manually take ownership of a Low record.
+  if (row.risk_level === 'Low' && !row.assigned_to && !closed) {
+    html += `<span class="text-gray-500 text-xs italic mr-1">Monitor</span>`
+  }
 
   // ── Admin: assign / reassign dropdown ──
   if (isAdmin && !closed) {
@@ -207,6 +324,15 @@ function buildActionButtons(row) {
       </button>`
   }
 
+  // ── Create Work Order (High/Critical only, no existing open WO) ──
+  if ((row.risk_level === 'High' || row.risk_level === 'Critical') && !closed) {
+    html += `
+      <button onclick="createWorkOrder(${id})"
+        class="bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded">
+        🔧 Create WO
+      </button>`
+  }
+
   // ── Status update buttons: admin always, technician only if assigned to them ──
   if (!closed && (isAdmin || isMine)) {
     if (s === 'ASSIGNED' || s === 'OPEN') {
@@ -223,7 +349,7 @@ function buildActionButtons(row) {
   }
 
   html += '</div>'
-  if (html === '<div class="flex gap-1 flex-wrap"></div>') {
+  if (html === '<div class="flex gap-1 flex-wrap items-center"></div>') {
     return '<span class="text-gray-600 text-xs">—</span>'
   }
   return html
@@ -303,6 +429,7 @@ function filterStatus(status) {
   statusFilterVal = status
   document.querySelectorAll('.filter-btn').forEach(b => {
     if (b.id.startsWith('btn-owner-')) return
+    if (b.id.startsWith('btn-level-')) return
     b.classList.remove('active')
   })
   document.getElementById(`btn-${status}`).classList.add('active')
@@ -317,15 +444,46 @@ function filterOwner(owner) {
   applyFilters()
 }
 
+function filterLevel(level) {
+  levelFilterVal = level
+  document.querySelectorAll('[id^="btn-level-"]').forEach(b => b.classList.remove('active'))
+  document.getElementById(`btn-level-${level}`).classList.add('active')
+  applyFilters()
+}
+
 function applyFilters() {
   let data = allAlerts
   if (statusFilterVal !== 'ALL') {
     data = data.filter(r => r.alert_status === statusFilterVal)
   }
+  if (levelFilterVal !== 'ALL') {
+    data = data.filter(r => r.risk_level === levelFilterVal)
+  }
   if (CURRENT_USER.role === 'technician' && ownerFilter === 'MINE') {
     data = data.filter(r => r.assigned_to === CURRENT_USER.username)
   }
-  renderTable(data)
+  filteredAlerts = data
+  currentPage = 1
+  renderCurrentPage()
+}
+
+async function createWorkOrder(recordId) {
+  const res = await fetch(`/api/work-orders/from-alert/${recordId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  const data = await res.json()
+  if (res.ok) {
+    showToast(`✅ Work Order #${data.wo_id} created`, 'info')
+    window.location.href = `/work-orders/${data.wo_id}`
+  } else if (res.status === 409) {
+    if (confirm(`A work order already exists for this alert (#${data.wo_id}). View it?`)) {
+      window.location.href = `/work-orders/${data.wo_id}`
+    }
+  } else {
+    alert('Failed: ' + data.error)
+  }
 }
 
 load()

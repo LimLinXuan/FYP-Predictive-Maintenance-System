@@ -6,59 +6,167 @@
   <title>Predictive Maintenance System</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* Thin scrollbar for the sidebar nav list */
+    #sidebarNav::-webkit-scrollbar { width: 4px; }
+    #sidebarNav::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+  </style>
 </head>
 
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
-  <nav class="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center gap-8">
-    <span class="text-blue-400 font-bold text-lg">⚙ PredictiveMaint</span>
-    <a href="/"        class="text-gray-300 hover:text-white text-sm transition-colors">Dashboard</a>
-    <a href="/records" class="text-gray-300 hover:text-white text-sm transition-colors">All Records</a>
-    <a href="/alerts"  class="text-gray-300 hover:text-white text-sm transition-colors">Alerts</a>
-    <a href="/metrics" class="text-gray-300 hover:text-white text-sm transition-colors">Metrics</a>
-    <a href="/model-comparison" class="text-gray-300 hover:text-white text-sm transition-colors">Model Comparison</a>
-    <a href="/explainability" class="text-gray-300 hover:text-white text-sm transition-colors">Explanability</a>
-    <a href="/apidocs" class="text-gray-300 hover:text-white text-sm transition-colors" target="_blank">API Docs ↗</a>
-    <a href="/stream" class="text-gray-300 hover:text-white text-sm transition-colors">Live Stream</a>
-    <a href="/health" class="text-gray-300 hover:text-white text-sm transition-colors">System Health</a>
-    {% if current_user.is_authenticated and current_user.role == 'admin' %}
-    <a href="/admin/users" class="text-purple-400 hover:text-purple-300 text-sm transition-colors">Manage Users</a>
-    <a href="/admin/audit-log" class="text-purple-400 hover:text-purple-300 text-sm transition-colors">Audit Log</a>
-    {% endif %}
-    <div class="ml-auto flex items-center gap-4">
-      {% if current_user.is_authenticated %}
-      <span class="text-gray-500 text-xs">{{ current_user.username }} ({{ current_user.role }})</span>
+  {% set p = request.path %}
+  <div class="flex min-h-screen">
 
-      <!-- Notification bell -->
-      <div class="relative" id="notifBellWrap">
-        <button id="notifBellBtn" class="relative text-gray-400 hover:text-white text-sm transition-colors px-1" title="Notifications">
-          <span aria-hidden="true">🔔</span>
-          <span id="notifBadge" class="hidden absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none min-w-[15px] text-center">0</span>
-        </button>
+    {% if current_user.is_authenticated %}
+    <!-- ══════════ Sidebar ══════════ -->
+    <aside class="w-60 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col h-screen sticky top-0">
 
-        <div id="notifDropdown" class="hidden absolute right-0 top-8 w-80 max-h-96 overflow-y-auto bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl z-50">
-          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 text-sm font-semibold">
-            <span>Notifications</span>
-            <a href="/notifications" class="text-xs font-medium text-blue-600 hover:underline">See all</a>
-          </div>
-          <div id="notifDropdownList" class="p-1.5">
-            <div class="py-6 text-center text-gray-400 text-sm">Loading&hellip;</div>
-          </div>
+      <div class="px-5 py-5 border-b border-gray-800 flex items-center gap-2.5">
+        <span class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center text-white">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4.5 h-4.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3m9-9h-3M6 12H3m14.36-6.36l-2.12 2.12M8.76 15.24l-2.12 2.12m0-10.72l2.12 2.12m8.48 8.48l-2.12-2.12M12 8.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z"/></svg>
+        </span>
+        <div class="leading-tight">
+          <p class="text-sm font-semibold text-gray-100">Predictive Maintenance</p>
+          <p class="text-[11px] text-gray-500">Industrial Operations Console</p>
         </div>
       </div>
 
-      <a href="/change-password" class="text-gray-400 hover:text-white text-sm transition-colors">Change Password</a>
-      <a href="/logout" class="text-gray-400 hover:text-white text-sm transition-colors">Logout</a>
-      {% endif %}
-    </div>
-  </nav>
+      <nav id="sidebarNav" class="flex-1 overflow-y-auto px-3 py-4 text-sm">
 
-  <main class="p-6 max-w-7xl mx-auto">
-    {% block content %}{% endblock %}
-  </main>
+        <a href="/" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p == '/' else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+          Overview
+        </a>
+
+        <p class="text-[10px] tracking-wide text-gray-600 px-3 mt-4 mb-1.5">Operations</p>
+        <a href="/records" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/records') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17V7m6 10V7M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+          All Records
+        </a>
+        <a href="/production-lines" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/production-lines') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h7"/></svg>
+          Production Lines
+        </a>
+        <a href="/assets" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/assets') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+          Assets
+        </a>
+        <a href="/alerts" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/alerts') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 10-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+          Alerts
+        </a>
+        <a href="/work-orders" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/work-orders') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+  Work Orders
+</a>
+        <p class="text-[10px] tracking-wide text-gray-600 px-3 mt-4 mb-1.5">Analytics</p>
+        <a href="/metrics" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/metrics') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm6 0V9a2 2 0 00-2-2h-2a2 2 0 00-2 2v10m10 0V5a2 2 0 00-2-2h-2a2 2 0 00-2 2v14"/></svg>
+          Metrics
+        </a>
+        <a href="/model-comparison" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/model-comparison') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4M16 17H4m0 0l4 4m-4-4l4-4"/></svg>
+          Model Comparison
+        </a>
+        <a href="/explainability" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/explainability') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8a4 4 0 100 8 4 4 0 000-8z"/></svg>
+          Explainability
+        </a>
+
+        <p class="text-[10px] tracking-wide text-gray-600 px-3 mt-4 mb-1.5">Integrations</p>
+        <a href="/apidocs" target="_blank" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16M6 8L2 12l4 4m12-8l4 4-4 4"/></svg>
+          API Docs
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3 ml-auto opacity-60"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
+        <a href="/stream" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/stream') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Live Stream
+        </a>
+
+        <p class="text-[10px] tracking-wide text-gray-600 px-3 mt-4 mb-1.5">System</p>
+        <a href="/health" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-blue-500/10 text-blue-400 font-medium' if p.startswith('/health') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+          System Health
+        </a>
+
+        {% if current_user.role == 'admin' %}
+        <p class="text-[10px] tracking-wide text-purple-400/70 px-3 mt-4 mb-1.5">Admin</p>
+        <a href="/admin/users" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-purple-500/10 text-purple-300 font-medium' if p.startswith('/admin/users') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m5-4.13a4 4 0 100-8 4 4 0 000 8zm6 4a4 4 0 100-8 4 4 0 000 8z"/></svg>
+          Manage Users
+        </a>
+        <a href="/admin/audit-log" class="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-1 transition-colors {{ 'bg-purple-500/10 text-purple-300 font-medium' if p.startswith('/admin/audit-log') else 'text-gray-300 hover:bg-gray-800 hover:text-white' }}">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Audit Log
+        </a>
+        {% endif %}
+      </nav>
+
+      <!-- Notifications + user footer -->
+      <div class="border-t border-gray-800 p-3">
+        <div class="relative" id="notifBellWrap">
+          <button id="notifBellBtn" class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-gray-300 hover:bg-gray-800 hover:text-white transition-colors text-sm" title="Notifications">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-4 h-4 shrink-0"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 10-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+            Notifications
+            <span id="notifBadge" class="hidden ml-auto bg-red-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none min-w-[15px] text-center">0</span>
+          </button>
+
+          <div id="notifDropdown" class="hidden absolute left-0 bottom-11 w-80 max-h-96 overflow-y-auto bg-white text-gray-900 border border-gray-200 rounded-lg shadow-xl z-50">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100 text-sm font-semibold">
+              <span>Notifications</span>
+              <a href="/notifications" class="text-xs font-medium text-blue-600 hover:underline">See all</a>
+            </div>
+            <div id="notifDropdownList" class="p-1.5">
+              <div class="py-6 text-center text-gray-400 text-sm">Loading&hellip;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2.5 px-3 py-2 mt-1">
+          <span class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-200 shrink-0">
+            {{ current_user.username[:2].upper() }}
+          </span>
+          <div class="min-w-0 leading-tight">
+            <p class="text-sm text-gray-200 truncate">{{ current_user.username }}</p>
+            <p class="text-[11px] text-gray-500 truncate">{{ current_user.role }}</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-1 px-1 mt-1">
+          <a href="/change-password" class="flex-1 text-center text-[11.5px] text-gray-400 hover:text-white hover:bg-gray-800 rounded-md py-1.5 transition-colors">Change Password</a>
+          <a href="/logout" class="flex-1 text-center text-[11.5px] text-gray-400 hover:text-white hover:bg-gray-800 rounded-md py-1.5 transition-colors">Logout</a>
+        </div>
+      </div>
+    </aside>
+    {% endif %}
+
+    <!-- ══════════ Main content ══════════ -->
+    <div class="flex-1 min-w-0">
+      <main class="p-6 {{ 'max-w-[1600px]' if current_user.is_authenticated else 'max-w-7xl' }} mx-auto">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
 
   <!-- Toast container -->
   <div id="toastContainer" class="fixed top-4 right-4 z-50 flex flex-col gap-2 w-80"></div>
+
+  <!-- Flash messages converted to toasts -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          {% for category, msg in messages %}
+            showToast(
+              {{ msg|tojson }},
+              {{ ('critical' if category in ['error', 'danger'] else 'low' if category == 'success' else 'medium' if category == 'warning' else 'info')|tojson }}
+            );
+          {% endfor %}
+        });
+      </script>
+    {% endif %}
+  {% endwith %}
 
   <script>
     function showToast(message, level = 'info', duration = 5000) {
@@ -111,6 +219,7 @@
 
     function setBadge(count) {
       const badge = document.getElementById('notifBadge');
+      if (!badge) return;
       if (count > 0) {
         badge.textContent = count > 99 ? '99+' : count;
         badge.classList.remove('hidden');
@@ -121,6 +230,7 @@
 
     function renderDropdown() {
       const list = document.getElementById('notifDropdownList');
+      if (!list) return;
       if (!notifs.length) {
         list.innerHTML = '<div class="py-8 text-center text-gray-400 text-sm">🎉<br>You\'re all caught up.</div>';
         return;

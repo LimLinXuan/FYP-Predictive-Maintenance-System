@@ -44,46 +44,67 @@
   </div>
 </div>
 
-<!-- Charts 行1 -->
+<!-- Charts 行1 (統一高度 h-[360px]) -->
 <div class="grid grid-cols-2 gap-6 mb-6">
 
   <!-- Alert Status Breakdown bar chart -->
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold text-gray-200 mb-1">Alert Status Breakdown</h2>
-    <p class="text-gray-500 text-xs mb-4">Distribution of all alert statuses across High/Critical records</p>
-    <canvas id="statusChart" height="220"></canvas>
+  <div class="bg-gray-800 rounded-xl p-5 flex flex-col h-[360px]">
+    <div class="mb-2">
+      <h2 class="font-semibold text-gray-200 mb-1 text-base">Alert Status Breakdown</h2>
+      <p class="text-gray-500 text-xs">Current status of managed alerts</p>
+    </div>
+    <div class="relative flex-1 w-full min-h-0 pt-2">
+      <canvas id="statusChart"></canvas>
+    </div>
   </div>
 
   <!-- Risk level pie -->
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold text-gray-200 mb-1">Risk Level Distribution</h2>
-    <p class="text-gray-500 text-xs mb-4">Proportion of Low / Medium / High / Critical records</p>
-    <canvas id="riskPieChart" height="220"></canvas>
+  <div class="bg-gray-800 rounded-xl p-5 flex flex-col h-[360px]">
+    <div class="mb-2">
+      <h2 class="font-semibold text-gray-200 mb-1 text-base">Risk Level Distribution</h2>
+      <p class="text-gray-500 text-xs">Proportion of Low / Medium / High / Critical records</p>
+    </div>
+    <div class="relative flex-1 w-full min-h-0 flex items-center justify-center pt-2">
+      <div class="w-full h-full max-w-[340px] max-h-[270px]">
+        <canvas id="riskPieChart"></canvas>
+      </div>
+    </div>
   </div>
 
 </div>
 
-<!-- Charts 行2 -->
+<!-- Charts 行2 (統一高度 h-[360px]) -->
 <div class="grid grid-cols-2 gap-6 mb-6">
 
   <!-- Risk score trend line -->
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold text-gray-200 mb-1">Risk Score Trend</h2>
-    <p class="text-gray-500 text-xs mb-4">Sampled risk score and failure probability across all records</p>
-    <canvas id="trendChart" height="220"></canvas>
+  <div class="bg-gray-800 rounded-xl p-5 flex flex-col h-[360px]">
+    <div class="mb-2">
+      <h2 class="font-semibold text-gray-200 mb-1 text-base">Risk Score Trend</h2>
+      <p class="text-gray-500 text-xs">Sampled risk score and failure probability across all records</p>
+    </div>
+    <div class="relative flex-1 w-full min-h-0 pt-2">
+      <canvas id="trendChart"></canvas>
+    </div>
   </div>
 
-  <!-- Resolution funnel horizontal bar -->
-  <div class="bg-gray-800 rounded-xl p-5">
-    <h2 class="font-semibold text-gray-200 mb-1">Alert Resolution Funnel</h2>
-    <p class="text-gray-500 text-xs mb-4">How alerts move through the workflow</p>
-    <canvas id="funnelChart" height="220"></canvas>
+  <!-- Resolution funnel -->
+  <div class="bg-gray-800 rounded-xl p-5 flex flex-col h-[360px]">
+    <div class="mb-1">
+      <h2 class="font-semibold text-gray-200 mb-1 text-base">Alert Resolution Workflow</h2>
+      <p class="text-gray-500 text-xs">How many alerts have ever reached each stage of the pipeline (cumulative)</p>
+    </div>
+    <div class="relative flex-1 w-full min-h-0 pt-2">
+      <canvas id="funnelChart"></canvas>
+    </div>
+    <p class="text-gray-600 text-[11px] mt-2 leading-snug" id="funnelNote"></p>
   </div>
 
 </div>
 
 <script>
 const CHART_DEFAULTS = {
+  responsive: true,
+  maintainAspectRatio: false,
   plugins: { legend: { labels: { color: '#d1d5db' } } },
   scales: {
     x: { ticks: { color: '#6b7280' }, grid: { color: '#374151' } },
@@ -108,7 +129,7 @@ async function load() {
   document.getElementById('m_high').textContent     = m.high_risk_count
   document.getElementById('m_score').textContent    = m.avg_risk_score
 
-  // 1. Alert Status bar chart
+  // 1. Alert Status bar chart — CURRENT snapshot
   const statusLabels = ['Open', 'In Progress', 'Resolved', 'False Positive']
   const statusValues = [m.open_alerts, m.in_progress, m.resolved_alerts, m.false_positives]
   const statusColors = ['#ef4444', '#eab308', '#22c55e', '#6b7280']
@@ -127,27 +148,43 @@ async function load() {
     },
     options: {
       ...CHART_DEFAULTS,
-      plugins: { legend: { display: false } },
-      scales: CHART_DEFAULTS.scales
+      plugins: { legend: { display: false } }
     }
   })
 
-  // 2. Risk level donut
-  const distLabels = s.distribution.map(d => d.risk_level)
-  const distData   = s.distribution.map(d => d.count)
-  const distColors = distLabels.map(l => ({
-    Critical: '#ef4444', High: '#f97316', Medium: '#eab308', Low: '#22c55e'
-  }[l] || '#6b7280'))
+  // 2. Risk level donut — Critical -> High -> Medium -> Low
+  const orderMap = { Critical: 1, High: 2, Medium: 3, Low: 4 }
+
+  // 保證四個類別都在列表中（即便 count 為 0 也不會丟失欄位）
+  const allLevels = ['Critical', 'High', 'Medium', 'Low']
+  const countMap = {}
+  s.distribution.forEach(d => { countMap[d.risk_level] = d.count })
+
+  const distLabels = allLevels
+  const distData   = allLevels.map(lvl => countMap[lvl] || 0)
+  const distColors = ['#ef4444', '#f97316', '#eab308', '#22c55e']
 
   new Chart(document.getElementById('riskPieChart'), {
     type: 'doughnut',
     data: {
       labels: distLabels,
-      datasets: [{ data: distData, backgroundColor: distColors, borderWidth: 0 }]
+      datasets: [{
+        data: distData,
+        backgroundColor: distColors,
+        borderWidth: 0,
+        hoverOffset: 4
+      }]
     },
     options: {
-      plugins: { legend: { labels: { color: '#d1d5db' } } },
-      cutout: '60%'
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: '#d1d5db', boxWidth: 12, padding: 12, font: { size: 11 } }
+        }
+      },
+      cutout: '62%'
     }
   })
 
@@ -181,26 +218,27 @@ async function load() {
     options: CHART_DEFAULTS
   })
 
-  // 4. Resolution funnel horizontal bar
-  const funnelTotal = m.open_alerts + (m.total_records - m.open_alerts - m.resolved_alerts - m.false_positives) + m.resolved_alerts + m.false_positives
+  // 4. Alert Resolution Workflow — Cumulative lifecycle funnel
+  const totalAlerts    = m.open_alerts + m.in_progress + m.resolved_alerts + m.false_positives
+  const acknowledged   = m.in_progress + m.resolved_alerts
+  const inProgressPlus = m.in_progress + m.resolved_alerts
+  const resolvedCount  = m.resolved_alerts
+  const falsePositive  = m.false_positives
+
   new Chart(document.getElementById('funnelChart'), {
     type: 'bar',
     data: {
-      labels: ['Open', 'In Progress', 'Resolved', 'False Positive'],
+      labels: ['Total Alerts', 'Acknowledged', 'In Progress+', 'Resolved', 'False Positive (branch)'],
       datasets: [{
-        label: 'Records',
-        data: [
-          m.open_alerts,
-          m.in_progress,
-          m.resolved_alerts,
-          m.false_positives
-        ],
-        backgroundColor: ['#ef4444', '#eab308', '#22c55e', '#6b7280'],
+        label: 'Alerts',
+        data: [totalAlerts, acknowledged, inProgressPlus, resolvedCount, falsePositive],
+        backgroundColor: ['#60a5fa', '#eab308', '#f97316', '#22c55e', '#6b7280'],
         borderRadius: 6,
         borderSkipped: false
       }]
     },
     options: {
+      ...CHART_DEFAULTS,
       indexAxis: 'y',
       plugins: { legend: { display: false } },
       scales: {
@@ -209,6 +247,10 @@ async function load() {
       }
     }
   })
+
+  document.getElementById('funnelNote').textContent =
+    `${totalAlerts} alerts total → ${acknowledged} acknowledged → ${inProgressPlus} reached In Progress or beyond → ${resolvedCount} fully resolved. ` +
+    `${falsePositive} were separately flagged as False Positive (a branch, not a pipeline stage).`
 }
 
 load()
