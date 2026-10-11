@@ -233,6 +233,8 @@ let prevSummary   = null
 let prevAlertIds  = new Set()
 let prevStatusMap = new Map()
 let prevStreamRecordId = null
+let dashboardStreamCursor = 0
+let dashboardLoadInFlight = false
 
 let activeRiskFilter = null
 let lastAlerts        = []
@@ -554,6 +556,8 @@ async function loadAssetHealth() {
 }
 
 async function loadDashboard(isRefresh = false) {
+  if (dashboardLoadInFlight) return
+  dashboardLoadInFlight = true
   try {
     const s = await fetch('/api/summary').then(r => r.json())
     document.getElementById('open_alerts').textContent = s.open_alerts
@@ -779,7 +783,12 @@ async function loadDashboard(isRefresh = false) {
       new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
     if (isRefresh) {
-      const streamRow = await fetch('/api/stream').then(r => r.json())
+      const streamRow = await fetch(`/api/stream?cursor=${dashboardStreamCursor}`, { cache: 'no-store' }).then(r => r.json())
+      if (streamRow && !streamRow.error) {
+        dashboardStreamCursor = Number.isInteger(streamRow.next_stream_index)
+          ? streamRow.next_stream_index
+          : (streamRow.stream_index + 1) % streamRow.total_records
+      }
       if (streamRow && !streamRow.error && streamRow.record_id !== prevStreamRecordId) {
         if (streamRow.risk_level === 'Critical' || streamRow.risk_level === 'High') {
           showToast(
@@ -793,6 +802,9 @@ async function loadDashboard(isRefresh = false) {
   } catch (err) {
     console.error('Dashboard refresh failed:', err)
     if (isRefresh) showToast('⚠ Failed to refresh dashboard data', 'high')
+  }
+  finally {
+    dashboardLoadInFlight = false
   }
 }
 

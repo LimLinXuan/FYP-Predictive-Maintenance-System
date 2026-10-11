@@ -37,6 +37,21 @@
   </div>
 </div>
 
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-4"><p class="text-gray-400 text-xs uppercase tracking-wide">Availability <span class="text-gray-600">30d</span></p><p class="text-2xl font-bold mt-1" id="lineAvailability">—</p></div>
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-4"><p class="text-gray-400 text-xs uppercase tracking-wide">MTBF</p><p class="text-2xl font-bold mt-1" id="lineMtbf">—</p></div>
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-4"><p class="text-gray-400 text-xs uppercase tracking-wide">MTTR</p><p class="text-2xl font-bold mt-1" id="lineMttr">—</p></div>
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-4"><p class="text-gray-400 text-xs uppercase tracking-wide">Risk concentration</p><p class="text-2xl font-bold mt-1 text-orange-400" id="lineHighRisk">—</p></div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+  <div class="xl:col-span-2 bg-gray-800 border border-gray-700 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-4"><div><h2 class="font-semibold text-gray-200">Digital Twin · Machine Status</h2><p class="text-xs text-gray-500 mt-1">Click a machine to open risk, observations, and maintenance history.</p></div><span class="text-xs text-gray-500" id="lineRiskSummary"></span></div>
+    <div id="machineTwin" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+  </div>
+  <div class="bg-gray-800 border border-gray-700 rounded-xl p-5"><h2 class="font-semibold text-gray-200">Failure Trend</h2><p class="text-xs text-gray-500 mt-1 mb-3">Unplanned failures, last 14 days.</p><div class="h-44"><canvas id="lineFailureTrend"></canvas></div></div>
+</div>
+
 <!-- Assets table -->
 <div class="bg-gray-800 rounded-xl p-5 overflow-x-auto">
   <h2 class="font-semibold text-gray-200 mb-4">Assets on this Line</h2>
@@ -48,6 +63,8 @@
         <th class="text-left py-2 pr-4">Type</th>
         <th class="text-left py-2 pr-4">Location</th>
         <th class="text-left py-2 pr-4">Criticality</th>
+        <th class="text-left py-2 pr-4">Risk</th>
+        <th class="text-left py-2 pr-4">Maintenance</th>
         <th class="text-left py-2">Status</th>
       </tr>
     </thead>
@@ -75,14 +92,34 @@ const ASSET_STATUS_COLOR = {
   MAINTENANCE: 'text-orange-400',
   DOWN:        'text-red-400'
 }
+const RISK_COLOR = { Critical: 'text-red-400', High: 'text-orange-400', Medium: 'text-yellow-400', Low: 'text-green-400', Unknown: 'text-gray-500' }
+const MAINT_COLOR = { DOWN: 'text-red-400', IN_PROGRESS: 'text-orange-400', OVERDUE: 'text-red-300', DUE_SOON: 'text-yellow-400', ON_SCHEDULE: 'text-green-400' }
+
+function dash(value, suffix = '') { return value === null || value === undefined ? '—' : `${value}${suffix}` }
+
+function renderMachineCard(machine) {
+  const statusCls = ASSET_STATUS_COLOR[machine.status] || 'text-gray-300'
+  const riskCls = RISK_COLOR[machine.risk_level] || 'text-gray-400'
+  const riskText = machine.risk_level
+    ? `${machine.risk_level}${machine.risk_score == null ? '' : ` · ${machine.risk_score}`}`
+    : 'Not available'
+  const maintCls = MAINT_COLOR[machine.maintenance_status] || 'text-gray-400'
+  return `<a href="/machine/${machine.machine_id}" class="block bg-gray-900/70 border border-gray-700 hover:border-blue-500/60 rounded-lg p-4 transition-colors">
+    <div class="flex items-center justify-between"><span class="font-mono font-bold text-blue-300">${machine.machine_id}</span><span class="text-[11px] font-semibold ${statusCls}">${machine.status}</span></div>
+    <p class="text-xs text-gray-400 mt-2 truncate">${machine.machine_name || machine.asset_id}</p>
+    <div class="grid grid-cols-2 gap-2 mt-3 text-[11px]"><span class="text-gray-500">Risk <b class="block ${riskCls}">${riskText}</b></span><span class="text-gray-500">Maintenance <b class="block ${maintCls}">${machine.maintenance_status || 'Not available'}</b></span></div>
+  </a>`
+}
 
 function renderAssetRow(asset) {
   const critCls   = CRITICALITY_COLOR[asset.criticality] || 'text-gray-300'
   const statusCls = ASSET_STATUS_COLOR[asset.status] || 'text-gray-300'
+  const riskCls = RISK_COLOR[asset.risk_level] || 'text-gray-400'
+  const maintCls = MAINT_COLOR[asset.maintenance_status] || 'text-gray-400'
   return `
     <tr class="border-b border-gray-700 hover:bg-gray-750 transition-colors">
       <td class="py-3 pr-4 font-mono">
-        <a href="/assets/${asset.asset_id}" class="text-blue-400 hover:text-blue-300 hover:underline">${asset.asset_id}</a>
+        <a href="/machine/${asset.machine_id}" class="text-blue-400 hover:text-blue-300 hover:underline">${asset.asset_id}</a>
       </td>
       <td class="py-3 pr-4">
         <p class="text-gray-100">${asset.machine_name}</p>
@@ -91,6 +128,8 @@ function renderAssetRow(asset) {
       <td class="py-3 pr-4 text-gray-300">${asset.machine_type || '—'}</td>
       <td class="py-3 pr-4 text-gray-400">${asset.location || '—'}</td>
       <td class="py-3 pr-4 font-semibold ${critCls}">${asset.criticality}</td>
+      <td class="py-3 pr-4 font-semibold ${riskCls}">${asset.risk_level || 'Not available'}${asset.risk_score === null || asset.risk_score === undefined ? '' : ` · ${asset.risk_score}`}</td>
+      <td class="py-3 pr-4 font-semibold ${maintCls}">${asset.maintenance_status || 'ON_SCHEDULE'}</td>
       <td class="py-3 font-semibold ${statusCls}">${asset.status}</td>
     </tr>`
 }
@@ -120,6 +159,25 @@ async function load() {
       assets.filter(a => a.status === 'WARNING' || a.status === 'MAINTENANCE').length
     document.getElementById('s_down').textContent =
       assets.filter(a => a.status === 'DOWN').length
+
+    const dashValue = (value, suffix = '') => value === null || value === undefined ? '—' : `${value}${suffix}`
+    const kpis = data.kpis || {}
+    document.getElementById('lineAvailability').textContent = dashValue(kpis.availability, '%')
+    document.getElementById('lineMtbf').textContent = dashValue(kpis.mtbf_hours, ' h')
+    document.getElementById('lineMttr').textContent = dashValue(kpis.mttr_minutes, ' min')
+    const risks = data.risk_counts || {}
+const hasRisk = Object.keys(risks).length > 0
+document.getElementById('lineHighRisk').textContent = hasRisk ? `${(risks.High || 0) + (risks.Critical || 0)} machines` : '—'
+document.getElementById('lineRiskSummary').textContent = hasRisk
+  ? `Critical ${risks.Critical || 0} · High ${risks.High || 0} · Medium ${risks.Medium || 0} · Low ${risks.Low || 0}`
+  : 'No risk data yet'
+    document.getElementById('machineTwin').innerHTML = assets.map(renderMachineCard).join('') || '<p class="text-gray-500 text-sm">No machines assigned.</p>'
+
+    new Chart(document.getElementById('lineFailureTrend'), {
+      type: 'line',
+      data: { labels: (data.failure_trend || []).map(p => p.date.slice(5)), datasets: [{ data: (data.failure_trend || []).map(p => p.failures), borderColor: '#f97316', backgroundColor: 'rgba(249,115,22,.15)', fill: true, tension: .35, pointRadius: 2 }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#6b7280', maxTicksLimit: 6 }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: '#9ca3af', precision: 0 }, grid: { color: '#374151' } } } }
+    })
 
     const tbody = document.getElementById('assetTable')
     const empty = document.getElementById('emptyMsg')

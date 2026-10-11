@@ -113,11 +113,10 @@ const CHART_DEFAULTS = {
 }
 
 async function load() {
-  const [m, s, t] = await Promise.all([
-    fetch('/api/metrics').then(r => r.json()),
-    fetch('/api/summary').then(r => r.json()),
-    fetch('/api/trends').then(r => r.json())
-  ])
+  const m = await fetch('/api/metrics').then(r => r.json())
+  if (m.error) throw new Error(m.error)
+  const s = { distribution: m.distribution || [] }
+  const t = m.trends || { record_ids: [], risk_scores: [], pred_probs: [] }
 
   // KPI cards
   document.getElementById('m_total').textContent    = m.total_records

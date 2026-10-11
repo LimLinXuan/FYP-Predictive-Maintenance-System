@@ -125,6 +125,7 @@
     <h2 class="font-semibold text-gray-200 mb-1">Top SHAP Features</h2>
     <p class="text-gray-500 text-xs mb-4">Features driving this record's risk prediction</p>
     <canvas id="shapChart" height="200"></canvas>
+    <p id="shapEmptyState" class="hidden text-gray-500 text-sm py-8 text-center">No valid SHAP values are available for this record.</p>
   </div>
 
 </div>
@@ -144,16 +145,28 @@
   <p class="text-green-400 text-sm mt-3 hidden" id="updateMsg">Status updated successfully.</p>
 </div>
 
+<div id="linkedWorkOrderPanel" class="hidden bg-gray-800 rounded-xl p-5 mt-6">
+  <h2 class="font-semibold text-gray-200 mb-3">Linked Work Orders</h2>
+  <div id="linkedWorkOrderList" class="space-y-2"></div>
+  <p id="linkedWorkOrderReview" class="hidden mt-3 text-sm text-amber-300">
+    A linked work order is closed while this alert remains open. Review the alert before deciding whether follow-up maintenance is needed.
+  </p>
+  <button id="createFollowupWorkOrder" type="button" onclick="createFollowupWorkOrder()"
+    class="hidden mt-3 bg-red-700 hover:bg-red-600 text-white text-sm px-3 py-2 rounded-lg">
+    Create Follow-up Work Order
+  </button>
+</div>
+
 <!-- Resolution Information -->
 <div class="bg-gray-800 rounded-xl p-5 mt-6 hidden" id="resolutionCard">
-  <h2 class="font-semibold text-gray-200 mb-4">Resolution Information</h2>
+  <h2 class="font-semibold text-gray-200 mb-4" id="resolutionTitle">Resolution Information</h2>
   <div class="grid grid-cols-2 gap-4 mb-4">
     <div class="bg-gray-900 rounded-lg p-4">
       <p class="text-sm text-gray-400 mb-1">Resolved By</p>
       <p class="font-bold text-lg text-gray-100" id="resolvedBy">—</p>
     </div>
     <div class="bg-gray-900 rounded-lg p-4">
-      <p class="text-sm text-gray-400 mb-1">Resolved At</p>
+      <p class="text-sm text-gray-400 mb-1" id="resolvedAtLabel">Resolved At</p>
       <p class="font-bold text-lg text-gray-100" id="resolvedAt">—</p>
     </div>
   </div>
@@ -176,6 +189,8 @@
   <div id="historyTimeline" class="space-y-4">
     <p class="text-gray-500 text-sm">Loading history...</p>
   </div>
+  <button id="historyToggle" type="button" onclick="toggleHistory()"
+    class="hidden mt-2 text-blue-400 hover:text-blue-300 text-sm">View All History</button>
 </div>
 
 <script>
@@ -185,6 +200,12 @@ const CURRENT_USER = { role: "{{ current_user.role }}", username: "{{ current_us
 let currentRiskLevel  = null
 let currentAssignedTo = null
 let technicianList    = []
+let loadedHistoryRows = []
+let historyExpanded = false
+let linkedWorkOrders = []
+let currentAlertStatus = null
+let shapChart = null
+let creatingFollowupWorkOrder = false
 
 const levelColor = {
   Critical: { text: 'text-red-400',    bg: 'bg-red-900 border border-red-700' },
@@ -561,6 +582,11 @@ function renderResolutionCard(data) {
   }
 
   card.classList.remove('hidden')
+  const isFalsePositive = data.alert_status === 'FALSE_POSITIVE'
+  document.getElementById('resolutionTitle').textContent = isFalsePositive
+    ? 'False Positive Information' : 'Resolution Information'
+  document.getElementById('resolvedAtLabel').textContent = isFalsePositive
+    ? 'Marked False Positive At' : 'Resolved At'
   document.getElementById('resolvedBy').textContent   = data.resolved_by || '—'
   document.getElementById('resolvedAt').textContent   = formatResolvedTimestamp(data.resolved_at)
   document.getElementById('resolutionNote').textContent =
@@ -657,6 +683,9 @@ async function load() {
 
   currentRiskLevel  = data.risk_level
   currentAssignedTo = data.assigned_to || null
+  currentAlertStatus = data.alert_status
+  linkedWorkOrders = Array.isArray(data.linked_work_orders) ? data.linked_work_orders : []
+  renderLinkedWorkOrders()
 
   if (CURRENT_USER.role === 'admin' && technicianList.length === 0) {
     technicianList = await fetch('/api/technicians').then(r => r.json())
@@ -755,13 +784,28 @@ async function load() {
       </div>`
   })
 
-  if (data.shap && data.shap.length > 0) {
-    const rawFeatures  = data.shap.map(s => s.top_feature)
-    const bizLabels    = rawFeatures.map(f => FEATURE_LABELS[f] || f)
-    const values       = data.shap.map(s => parseFloat(s.top_shap_value))
+  const shapMetadata = new Set(['record_id', 'top_feature', 'top_shap_value'])
+  const shapRow = (data.shap || []).find(row => row && typeof row === 'object')
+  const shapFeatures = shapRow
+    ? Object.entries(shapRow)
+        .filter(([feature, value]) => !shapMetadata.has(feature) && typeof value === 'number' && Number.isFinite(value))
+        .map(([feature, value]) => ({ feature, value }))
+        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+        .slice(0, 5)
+    : []
+  const shapCanvas = document.getElementById('shapChart')
+  const shapEmptyState = document.getElementById('shapEmptyState')
+
+  if (shapFeatures.length) {
+    shapCanvas.classList.remove('hidden')
+    shapEmptyState.classList.add('hidden')
+    if (shapChart) shapChart.destroy()
+    const rawFeatures = shapFeatures.map(item => item.feature)
+    const bizLabels = rawFeatures.map(feature => FEATURE_LABELS[feature] || feature)
+    const values = shapFeatures.map(item => item.value)
     const colors       = values.map(v => v >= 0 ? '#ef4444' : '#60a5fa')
 
-    new Chart(document.getElementById('shapChart'), {
+    shapChart = new Chart(shapCanvas, {
       type: 'bar',
       data: {
         labels: bizLabels,
@@ -792,6 +836,9 @@ async function load() {
         }
       }
     })
+  } else {
+    shapCanvas.classList.add('hidden')
+    shapEmptyState.classList.remove('hidden')
   }
 
   renderPipeline(data)
@@ -800,6 +847,63 @@ async function load() {
   renderResolutionCard(data)
   renderAssetInfo(data.asset)
   loadHistory()
+}
+
+function renderLinkedWorkOrders() {
+  const panel = document.getElementById('linkedWorkOrderPanel')
+  const list = document.getElementById('linkedWorkOrderList')
+  const notice = document.getElementById('linkedWorkOrderReview')
+  const followup = document.getElementById('createFollowupWorkOrder')
+  if (!linkedWorkOrders.length) {
+    panel.classList.add('hidden')
+    return
+  }
+
+  panel.classList.remove('hidden')
+  list.innerHTML = linkedWorkOrders.map(wo => `
+    <p class="text-sm text-gray-300">
+      <a class="text-blue-400 hover:text-blue-300 hover:underline font-mono" href="/work-orders/${wo.wo_id}">Work Order #${wo.wo_id}</a>
+      <span class="ml-2 text-gray-400">${escapeHistoryText(String(wo.status || '').replace(/_/g, ' '))}</span>
+      ${wo.assigned_to ? `<span class="ml-2 text-gray-500">Assigned to ${escapeHistoryText(wo.assigned_to)}</span>` : ''}
+    </p>`).join('')
+
+  const terminalStatuses = ['CLOSED', 'CANCELLED', 'COMPLETED', 'VERIFIED']
+  const hasActiveWorkOrder = linkedWorkOrders.some(wo => !terminalStatuses.includes(wo.status))
+  const hasClosedWorkOrder = linkedWorkOrders.some(wo => terminalStatuses.includes(wo.status))
+  const alertIsOpen = !['RESOLVED', 'FALSE_POSITIVE'].includes(currentAlertStatus)
+  const needsReview = hasClosedWorkOrder && alertIsOpen && !hasActiveWorkOrder
+  notice.classList.toggle('hidden', !needsReview)
+  followup.classList.toggle('hidden', !needsReview || CURRENT_USER.role !== 'admin')
+}
+
+async function createFollowupWorkOrder() {
+  if (creatingFollowupWorkOrder || CURRENT_USER.role !== 'admin') return
+  if (!confirm('Create a follow-up work order for this open alert?')) return
+  creatingFollowupWorkOrder = true
+  const button = document.getElementById('createFollowupWorkOrder')
+  button.disabled = true
+  try {
+    const res = await fetch(`/api/work-orders/from-alert/${RECORD_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    const data = await res.json()
+    if (res.ok) {
+      window.location.href = `/work-orders/${data.wo_id}`
+    } else if (res.status === 409 && data.wo_id) {
+      if (confirm(`An active work order already exists (#${data.wo_id}). View it?`)) {
+        window.location.href = `/work-orders/${data.wo_id}`
+      }
+    } else {
+      alert('Failed to create work order: ' + data.error)
+    }
+  } catch (error) {
+    alert('Failed to create work order. Please try again.')
+  } finally {
+    creatingFollowupWorkOrder = false
+    button.disabled = false
+  }
 }
 
 
@@ -812,8 +916,8 @@ function renderStatusButtons(currentStatus, assignedTo) {
   if (closed) {
     if (isAdmin) {
       container.innerHTML = `
-        <span class="text-gray-500 text-xs mr-2">Alert closed —</span>
-        <button onclick="updateStatus('OPEN')"
+        <span class="text-gray-500 text-xs mr-2">${currentStatus.replace('_', ' ')} —</span>
+        <button onclick="reopenAlert()"
           class="bg-gray-600 hover:bg-gray-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
           Reopen Alert
         </button>`
@@ -925,10 +1029,12 @@ async function assignFromDetail() {
 }
 
 function onAssignmentOrStatusChange(status) {
+  currentAlertStatus = status
   const stateBadge = stateBadgeStyle(currentRiskLevel, status)
   document.getElementById('alertStatusBadge').className   = 'text-sm font-bold px-4 py-2 rounded-full ' + stateBadge.cls
   document.getElementById('alertStatusBadge').textContent = stateBadge.text
   renderStatusButtons(status, currentAssignedTo)
+  renderLinkedWorkOrders()
   loadHistory()
 
   fetch(`/api/record/${RECORD_ID}`).then(r => r.json()).then(renderResolutionCard)
@@ -941,8 +1047,34 @@ function onAssignmentOrStatusChange(status) {
 }
 
 const HISTORY_ACTION_STYLE = {
-  ASSIGN_ALERT:  { icon: '👤', dot: 'bg-blue-500',   label: 'Assigned' },
-  UPDATE_ALERT:  { icon: '🔄', dot: 'bg-yellow-500', label: 'Status Changed' },
+  ASSIGN_ALERT:  { icon: '•', dot: 'bg-blue-500',   label: 'Assignment Changed' },
+  UPDATE_ALERT:  { icon: '•', dot: 'bg-yellow-500', label: 'Status Changed' },
+  REOPEN_ALERT:  { icon: '•', dot: 'bg-orange-500', label: 'Alert Reopened' },
+}
+
+function escapeHistoryText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch])
+}
+
+function historyEventDetail(row) {
+  const details = row.details || ''
+  if (row.action === 'ASSIGN_ALERT') {
+    const previous = details.match(/previous_assignee=([^;]+);\s*new_assignee=(.+)/)
+    if (previous) return `From ${previous[1]} to ${previous[2]}`
+    const legacy = details.match(/assigned_to=(.+)/)
+    return legacy ? `Assigned to ${legacy[1]}` : details
+  }
+  if (row.action === 'UPDATE_ALERT') {
+    const change = details.match(/^(.+?)(?:\u2192|->)([^;]+)(.*)$/)
+    if (change) return `Status: ${change[1].trim()} to ${change[2].trim()}${change[3] || ''}`
+  }
+  if (row.action === 'REOPEN_ALERT') {
+    const change = details.match(/^(.+?)(?:\u2192|->)([^;]+);\s*reason=(.*)$/)
+    if (change) return `Status: ${change[1].trim()} to ${change[2].trim()}; reason: ${change[3]}`
+  }
+  return details
 }
 
 function formatHistoryTimestamp(ts) {
@@ -960,8 +1092,10 @@ async function loadHistory() {
   const assigneeBox = document.getElementById('currentAssigneeBox')
   try {
     const rows = await fetch(`/api/record/${RECORD_ID}/history`).then(r => r.json())
+    loadedHistoryRows = Array.isArray(rows) ? rows : []
+    historyExpanded = false
 
-    const lastAssign = [...rows].reverse().find(r => r.action === 'ASSIGN_ALERT')
+    const lastAssign = loadedHistoryRows.find(r => r.action === 'ASSIGN_ALERT')
     if (currentAssignedTo && lastAssign) {
       assigneeBox.innerHTML = `
         <div class="flex items-center gap-3">
@@ -969,24 +1103,39 @@ async function loadHistory() {
             ${currentAssignedTo.charAt(0).toUpperCase()}
           </div>
           <div>
-            <p class="text-gray-100 font-semibold">${currentAssignedTo} <span class="text-gray-500 text-xs font-normal">(Technician)</span></p>
-            <p class="text-gray-500 text-xs">Assigned by ${lastAssign.username} · ${formatHistoryTimestamp(lastAssign.timestamp)}</p>
+            <p class="text-gray-100 font-semibold">${escapeHistoryText(currentAssignedTo)} <span class="text-gray-500 text-xs font-normal">(Technician)</span></p>
+            <p class="text-gray-500 text-xs">Last assigned by ${escapeHistoryText(lastAssign.username)} · ${formatHistoryTimestamp(lastAssign.timestamp)}</p>
           </div>
         </div>`
     } else if (currentAssignedTo) {
-      assigneeBox.innerHTML = `<p class="text-gray-100 font-semibold">${currentAssignedTo}</p>`
+      assigneeBox.innerHTML = `<p class="text-gray-100 font-semibold">${escapeHistoryText(currentAssignedTo)}</p>`
     } else {
       assigneeBox.innerHTML = `<p class="text-gray-500 text-sm">Unassigned — no technician has claimed this alert yet.</p>`
     }
 
-    if (!Array.isArray(rows) || rows.length === 0) {
+    if (loadedHistoryRows.length === 0) {
       container.innerHTML = `<p class="text-gray-500 text-sm">No assignment or status history yet.</p>`
+      document.getElementById('historyToggle').classList.add('hidden')
       return
     }
 
+    renderHistoryRows()
+  } catch (e) {
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load history.</p>`
+    document.getElementById('historyToggle').classList.add('hidden')
+  }
+}
+
+function renderHistoryRows() {
+    const container = document.getElementById('historyTimeline')
+    const toggle = document.getElementById('historyToggle')
+    const rows = historyExpanded ? loadedHistoryRows : loadedHistoryRows.slice(0, 5)
+    toggle.classList.toggle('hidden', loadedHistoryRows.length <= 5)
+    toggle.textContent = historyExpanded ? 'Show Latest Five' : 'View All History'
     container.innerHTML = rows.map((row, i) => {
       const style = HISTORY_ACTION_STYLE[row.action] || { icon: '•', dot: 'bg-gray-500', label: row.action }
       const isLast = i === rows.length - 1
+      const detail = historyEventDetail(row)
       return `
         <div class="flex gap-3">
           <div class="flex flex-col items-center">
@@ -995,18 +1144,20 @@ async function loadHistory() {
           </div>
           <div class="pb-4">
             <p class="text-sm text-gray-200">
-              <span class="font-semibold">${style.label}</span>
+              <span class="font-semibold">${escapeHistoryText(style.label)}</span>
               <span class="text-gray-500">by</span>
-              <span class="text-blue-300 font-medium">${row.username}</span>
+              <span class="text-blue-300 font-medium">${escapeHistoryText(row.username)}</span>
             </p>
             <p class="text-xs text-gray-500 mt-0.5">${formatHistoryTimestamp(row.timestamp)}</p>
-            ${row.details && row.details !== '-' ? `<p class="text-xs text-gray-400 mt-1 font-mono">${row.details}</p>` : ''}
+            ${detail && detail !== '-' ? `<p class="text-xs text-gray-400 mt-1">${escapeHistoryText(detail)}</p>` : ''}
           </div>
         </div>`
     }).join('')
-  } catch (e) {
-    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load history.</p>`
-  }
+}
+
+function toggleHistory() {
+  historyExpanded = !historyExpanded
+  renderHistoryRows()
 }
 
 async function updateStatus(status) {
@@ -1027,6 +1178,21 @@ async function updateStatus(status) {
   } else {
     alert('Update failed: ' + data.error)
   }
+}
+
+async function reopenAlert() {
+  const reason = prompt('Why is this alert being reopened?')
+  if (reason === null) return
+  if (!reason.trim()) { alert('A reason is required to reopen this alert.'); return }
+  const res = await fetch(`/api/reopen_alert/${RECORD_ID}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason.trim() })
+  })
+  const data = await res.json()
+  if (!res.ok) { alert('Reopen failed: ' + data.error); return }
+  onAssignmentOrStatusChange(data.alert_status)
+  showToast(`Record #${RECORD_ID} reopened`, 'info')
 }
 
 document.getElementById('riskScoreInfoBtn').addEventListener('click', (e) => {

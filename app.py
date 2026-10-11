@@ -62,6 +62,89 @@ def compute_due_date(priority):
     hours = PRIORITY_DUE_HOURS.get(priority, 72)
     return (datetime.utcnow() + timedelta(hours=hours)).isoformat(timespec='seconds')
 
+# ══════════════════════════════════════════
+# PM & ASSET STATUS HELPERS
+# ══════════════════════════════════════════
+PM_DUE_SOON_DAYS = 7
+PM_DUE_SOON_WEAR = 20
+OPEN_WO_SQL = "('OPEN','ASSIGNED','ACCEPTED','IN_PROGRESS','PENDING_VERIFICATION')"
+ACTIVE_WO_SQL = "('ACCEPTED','IN_PROGRESS')"
+
+def get_latest_tool_wear(machine_id):
+    """Latest tool_wear reading for this machine, via the same
+    record_id % NUM_MACHINES mapping used by /api/assets/<id>/observations."""
+    try:
+        machine_idx = int(machine_id.split('-')[1])
+    except (IndexError, ValueError):
+        return None
+    target_remainder = (machine_idx - 1) % NUM_MACHINES
+    conn = get_raw_conn()
+    row = conn.execute("""
+        SELECT tool_wear FROM decision_log
+        WHERE record_id % ? = ? ORDER BY record_id DESC LIMIT 1
+    """, (NUM_MACHINES, target_remainder)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def compute_pm_status(pm):
+    """pm is a sqlite3.Row from pm_schedules. Returns (status, extra_info_dict)."""
+    if pm['frequency_type'] == 'DAYS':
+        if not pm['next_due_at']:
+            return 'ON_SCHEDULE', {}
+        due, now = datetime.fromisoformat(pm['next_due_at']), datetime.utcnow()
+        if now >= due:
+            return 'OVERDUE', {"days_overdue": (now - due).days}
+        elif (due - now).days <= PM_DUE_SOON_DAYS:
+            return 'DUE_SOON', {"days_remaining": (due - now).days}
+        return 'ON_SCHEDULE', {"days_remaining": (due - now).days}
+    elif pm['frequency_type'] == 'TOOL_WEAR':
+        current_wear = get_latest_tool_wear(pm['machine_id'])
+        if current_wear is None or pm['last_performed_tool_wear'] is None:
+            return 'ON_SCHEDULE', {}
+        remaining = pm['frequency_value'] - (current_wear - pm['last_performed_tool_wear'])
+        if remaining <= 0:
+            return 'OVERDUE', {"wear_over": abs(remaining)}
+        elif remaining <= PM_DUE_SOON_WEAR:
+            return 'DUE_SOON', {"wear_remaining": remaining}
+        return 'ON_SCHEDULE', {"wear_remaining": remaining}
+    return 'ON_SCHEDULE', {}
+
+def compute_next_pm_due(pm, performed_at_dt):
+    """DAYS type gets a fixed next_due_at; TOOL_WEAR type is tracked purely
+    by last_performed_tool_wear baseline instead, so returns None."""
+    if pm['frequency_type'] == 'DAYS':
+        return (performed_at_dt + timedelta(days=pm['frequency_value'])).isoformat(timespec='seconds')
+    return None
+
+def refresh_asset_status(machine_id):
+    """Recompute assets.status from live signals: an open downtime event
+    forces DOWN; an in-progress work order forces MAINTENANCE; an overdue
+    PM (with neither of the above) forces WARNING; otherwise RUNNING.
+    Call this after any downtime/PM/work-order state change."""
+    conn = get_raw_conn()
+    conn.row_factory = sqlite3.Row
+    open_downtime = conn.execute(
+        "SELECT 1 FROM downtime_events WHERE machine_id=? AND end_time IS NULL LIMIT 1",
+        (machine_id,)
+    ).fetchone()
+    if open_downtime:
+        new_status = 'DOWN'
+    else:
+        in_progress_wo = conn.execute(
+            "SELECT 1 FROM work_orders WHERE machine_id=? AND status IN ('ACCEPTED','IN_PROGRESS') LIMIT 1",
+            (machine_id,)
+        ).fetchone()
+        if in_progress_wo:
+            new_status = 'MAINTENANCE'
+        else:
+            pms = conn.execute("SELECT * FROM pm_schedules WHERE machine_id=?", (machine_id,)).fetchall()
+            overdue = any(compute_pm_status(pm)[0] == 'OVERDUE' for pm in pms)
+            new_status = 'WARNING' if overdue else 'RUNNING'
+    conn.execute("UPDATE assets SET status=? WHERE machine_id=?", (new_status, machine_id))
+    conn.commit()
+    conn.close()
+    return new_status
+
 app = Flask(__name__)
 DB = r"C:\Users\limli\Inti Folder\FYP\machine_monitor.db"
 MODEL_METRICS_CSV = os.path.join(os.path.dirname(DB), "model_metrics.csv")
@@ -78,33 +161,78 @@ bcrypt = Bcrypt(app)
 # DATABASE
 # ══════════════════════════════════════════
 
+_db_config_lock = threading.Lock()
+_db_configured = False
+
+
+def _configure_db_once():
+    """Set connection-wide SQLite options once per process."""
+    global _db_configured
+    if _db_configured:
+        return
+    with _db_config_lock:
+        if _db_configured:
+            return
+        conn = sqlite3.connect(DB, timeout=5)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.commit()
+        finally:
+            conn.close()
+        _db_configured = True
+
+
 def get_raw_conn():
-    """Shared helper for one-off connections outside the request context
-    (init_* functions, create_notification, etc). WAL mode lets reads and
-    writes happen concurrently instead of blocking each other, and
-    busy_timeout makes a connection wait (instead of instantly erroring)
-    if another connection briefly holds the write lock."""
-    conn = sqlite3.connect(DB)
-    conn.execute("PRAGMA journal_mode=WAL")
+    _configure_db_once()
+    conn = sqlite3.connect(DB, timeout=5)
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
 def get_db():
     if 'db' not in g:
-        g.db = sqlite3.connect(DB)
+        _configure_db_once()
+        g.db = sqlite3.connect(DB, timeout=5)
         g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL")
         g.db.execute("PRAGMA busy_timeout=5000")
     return g.db
 
 _notification_subscribers = {}
 _notification_lock = threading.Lock()
+_notification_write_lock = threading.Lock()
+
+# Short-lived cache for read-heavy dashboard aggregates. These values are
+# intentionally brief so alert/work-order updates become visible quickly while
+# repeated navigation does not re-run the same full-table calculations.
+_response_cache = {}
+_response_cache_lock = threading.Lock()
+_RESPONSE_CACHE_TTL = 5
+
+
+def _cached_response(key):
+    now = time.monotonic()
+    with _response_cache_lock:
+        item = _response_cache.get(key)
+        if item and now - item[0] < _RESPONSE_CACHE_TTL:
+            return item[1]
+        if item:
+            _response_cache.pop(key, None)
+    return None
+
+
+def _store_cached_response(key, value):
+    with _response_cache_lock:
+        _response_cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _clear_response_cache():
+    with _response_cache_lock:
+        _response_cache.clear()
 
 
 def _is_admin_username(username):
-    """Raw-connection role check (no flask.g dependency), safe to call
-    from create_notification() even outside a request context."""
     conn = get_raw_conn()
     row = conn.execute("SELECT role FROM users WHERE username=?", (username,)).fetchone()
     conn.close()
@@ -114,27 +242,23 @@ def _is_admin_username(username):
 def _push_to_subscribers(username, payload):
     with _notification_lock:
         if username is None:
-            targets = []
-            for uname, qs in _notification_subscribers.items():
-                if _is_admin_username(uname):
-                    targets.extend(qs)
+            subscriber_groups = [
+                (uname, list(qs))
+                for uname, qs in _notification_subscribers.items()
+            ]
         else:
             targets = list(_notification_subscribers.get(username, []))
+            subscriber_groups = None
+    if username is None:
+        targets = []
+        for uname, qs in subscriber_groups:
+            if _is_admin_username(uname):
+                targets.extend(qs)
     for q in targets:
         q.put(payload)
 
 
 def create_notification(username, title, message, level='info', record_id=None, notif_type='system'):
-    """
-    Persist a notification (so it survives refresh/logout) AND push it
-    live to any open SSE connection for that user.
-
-    username=None  -> broadcast to every currently-connected admin
-    username='bob' -> only bob sees it
-    level:      'info' | 'warning' | 'critical'  (fallback color if type is unrecognized)
-    notif_type: 'assignment' | 'resolved' | 'false_positive' | 'critical_alert'
-                | 'risk_escalated' | 'system'  (drives icon + color in the UI)
-    """
     conn = get_raw_conn()
     created_at = datetime.utcnow().isoformat(timespec='seconds')
     cur = conn.execute(
@@ -155,9 +279,6 @@ def create_notification(username, title, message, level='info', record_id=None, 
 
 
 def _notification_exists_for_record(record_id, notif_type):
-    """Stream cycles through the same records repeatedly (record_id % total),
-    so without this check the same alert would fire a fresh notification
-    every single time it's re-streamed. Only notify once per record+type."""
     conn = get_raw_conn()
     row = conn.execute(
         "SELECT 1 FROM notifications WHERE record_id=? AND type=? LIMIT 1",
@@ -167,16 +288,192 @@ def _notification_exists_for_record(record_id, notif_type):
     return row is not None
 
 def df_to_records(df):
-    """Convert a DataFrame to a list of dicts safe for jsonify —
-    replaces pandas NaN (from SQL NULL) with None, since raw NaN
-    is not valid JSON and breaks the browser's JSON.parse().
-
-    IMPORTANT: must cast to object dtype FIRST. If a column is entirely
-    NULL, pandas infers it as float64, and float64 columns cannot hold
-    Python None — pandas silently coerces None back to NaN. Casting to
-    object dtype first avoids this."""
     df = df.astype(object).where(pd.notnull(df), None)
     return df.to_dict(orient='records')
+
+
+def _latest_decisions_by_machine(conn):
+    """Newest decision_log row per machine. decision_log has no machine_id
+    column, so the machine is derived from record_id like machine_id_for_record()."""
+    latest = {}
+    try:
+        rows = conn.execute(
+            f"SELECT d.* FROM decision_log d "
+            f"JOIN (SELECT MAX(record_id) AS rid FROM decision_log "
+            f"      GROUP BY record_id % {NUM_MACHINES}) m ON d.record_id = m.rid"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return latest
+    for row in rows:
+        latest[machine_id_for_record(row['record_id'])] = row
+    return latest
+
+
+def _machine_maintenance_status(conn, asset):
+    """Combine operational status, open work, and PM state for the digital twin."""
+    if asset['status'] == 'DOWN':
+        return 'DOWN'
+    if asset['status'] == 'MAINTENANCE':  # effective status, from active WO
+        return 'IN_PROGRESS'
+
+    overdue = due_soon = False
+    try:
+        schedules = conn.execute(
+            "SELECT * FROM pm_schedules WHERE machine_id=?", (asset['machine_id'],)
+        ).fetchall()
+        for schedule in schedules:
+            status = compute_pm_status(schedule)[0]
+            overdue = overdue or status == 'OVERDUE'
+            due_soon = due_soon or status == 'DUE_SOON'
+    except (sqlite3.OperationalError, KeyError, TypeError, ValueError):
+        pass
+    if overdue:
+        return 'OVERDUE'
+    if due_soon:
+        return 'DUE_SOON'
+    return 'ON_SCHEDULE'
+
+
+def _effective_asset_status(conn, asset):
+    """Return the current operational status using the same live rules as
+    refresh_asset_status, without relying on a potentially stale stored value."""
+    machine_id = asset['machine_id']
+    try:
+        if conn.execute(
+            "SELECT 1 FROM downtime_events WHERE machine_id=? AND end_time IS NULL LIMIT 1",
+            (machine_id,)
+        ).fetchone():
+            return 'DOWN'
+        if conn.execute(
+            "SELECT 1 FROM work_orders WHERE machine_id=? "
+            "AND status IN ('ACCEPTED','IN_PROGRESS') LIMIT 1",
+            (machine_id,)
+        ).fetchone():
+            return 'MAINTENANCE'
+        schedules = conn.execute(
+            "SELECT * FROM pm_schedules WHERE machine_id=?", (machine_id,)
+        ).fetchall()
+        if any(compute_pm_status(schedule)[0] == 'OVERDUE' for schedule in schedules):
+            return 'WARNING'
+    except (sqlite3.OperationalError, KeyError, TypeError, ValueError):
+        return asset['status'] or 'RUNNING'
+    return 'RUNNING'
+
+
+def _machine_snapshot(conn, asset, latest_decisions):
+    decision = latest_decisions.get(asset['machine_id'])
+    decision_dict = dict(decision) if decision else {}
+    risk_level = decision_dict.get('risk_level') or None
+    risk_score = decision_dict.get('risk_score')
+    probability = decision_dict.get('pred_prob')
+    try:
+        risk_score = round(float(risk_score)) if risk_score is not None else None
+    except (TypeError, ValueError):
+        risk_score = None
+    try:
+        probability = round(float(probability), 3) if probability is not None else None
+    except (TypeError, ValueError):
+        probability = None
+    try:
+        open_work_orders = conn.execute(
+            f"SELECT COUNT(*) c FROM work_orders WHERE machine_id=? AND status IN {OPEN_WO_SQL}",
+            (asset['machine_id'],)
+        ).fetchone()['c']
+    except sqlite3.OperationalError:
+        open_work_orders = 0
+    effective_status = _effective_asset_status(conn, asset)
+    effective_asset = {**dict(asset), 'status': effective_status}
+    return {
+        **dict(asset),
+        'status': effective_status,
+        'risk_level': risk_level,
+        'risk_score': risk_score,
+        'pred_prob': probability,
+        'prediction_timestamp': decision_dict.get('timestamp'),
+        'air_temp': decision_dict.get('air_temp'),
+        'process_temp': decision_dict.get('process_temp'),
+        'rpm': decision_dict.get('rpm'),
+        'torque': decision_dict.get('torque'),
+        'tool_wear': decision_dict.get('tool_wear'),
+        'maintenance_status': _machine_maintenance_status(conn, effective_asset),
+        'open_work_orders': open_work_orders,
+        'decision_timestamp': decision_dict.get('timestamp'),
+    }
+
+
+def _kpis_for_machines(conn, machine_ids, days=30):
+    """Calculate simple rolling reliability KPIs from recorded downtime."""
+    machine_ids = list(machine_ids)
+    period_minutes = days * 24 * 60 * len(machine_ids)
+    if not machine_ids:
+        return {
+            'window_days': days, 'availability': None, 'mtbf_hours': None,
+            'mttr_minutes': None, 'failure_count': 0, 'downtime_minutes': 0,
+        }
+    placeholders = ','.join('?' for _ in machine_ids)
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat(timespec='seconds')
+    downtime_minutes = 0
+    failure_downtime_minutes = 0
+    failure_count = 0
+    try:
+        rows = conn.execute(
+            f"SELECT start_time, end_time, duration_minutes, reason_category "
+            f"FROM downtime_events WHERE machine_id IN ({placeholders}) AND start_time >= ?",
+            (*machine_ids, cutoff)
+        ).fetchall()
+        for row in rows:
+            duration = row['duration_minutes']
+            if duration is None and row['start_time']:
+                try:
+                    end = datetime.fromisoformat(row['end_time']) if row['end_time'] else datetime.utcnow()
+                    duration = max(0, int((end - datetime.fromisoformat(row['start_time'])).total_seconds() // 60))
+                except (TypeError, ValueError):
+                    duration = 0
+            downtime_minutes += int(duration or 0)
+            if row['reason_category'] == 'UNPLANNED_FAILURE':
+                failure_count += 1
+                failure_downtime_minutes += int(duration or 0)
+    except sqlite3.OperationalError:
+        pass
+
+    availability = max(0.0, min(100.0, (period_minutes - downtime_minutes) / period_minutes * 100))
+    operating_hours = max(0.0, (period_minutes - downtime_minutes) / 60)
+    return {
+        'window_days': days,
+        'availability': round(availability, 1),
+        'mtbf_hours': round(operating_hours / failure_count, 1) if failure_count else None,
+        'mttr_minutes': round(failure_downtime_minutes / failure_count, 1) if failure_count else None,
+        'failure_count': failure_count,
+        'downtime_minutes': downtime_minutes,
+    }
+
+
+def _failure_trend(conn, machine_ids, days=14):
+    """Return a filled daily failure series for the dashboard chart."""
+    machine_ids = list(machine_ids)
+    start = datetime.utcnow() - timedelta(days=days - 1)
+    counts = {}
+    if machine_ids:
+        placeholders = ','.join('?' for _ in machine_ids)
+        try:
+            rows = conn.execute(
+                f"SELECT start_time FROM downtime_events WHERE machine_id IN ({placeholders}) "
+                "AND reason_category='UNPLANNED_FAILURE' AND start_time >= ?",
+                (*machine_ids, start.isoformat(timespec='seconds'))
+            ).fetchall()
+            for row in rows:
+                try:
+                    day = datetime.fromisoformat(row['start_time']).date().isoformat()
+                    counts[day] = counts.get(day, 0) + 1
+                except (TypeError, ValueError):
+                    continue
+        except sqlite3.OperationalError:
+            pass
+    return [
+        {'date': (start + timedelta(days=i)).date().isoformat(),
+         'failures': counts.get((start + timedelta(days=i)).date().isoformat(), 0)}
+        for i in range(days)
+    ]
 
 @app.teardown_appcontext
 def close_db(error):
@@ -186,7 +483,6 @@ def close_db(error):
 
 
 def init_users_table():
-    """Create the users table if it doesn't exist yet. Safe to call every startup."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -194,28 +490,21 @@ def init_users_table():
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'technician',   -- 'admin' or 'technician'
+            role TEXT NOT NULL DEFAULT 'technician',
             is_active INTEGER NOT NULL DEFAULT 1,
             must_change_password INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             last_login TEXT
         )
     """)
-    # Migration: add the column if this table already existed from before this feature.
     try:
         conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
     except sqlite3.OperationalError:
-        pass  # column already exists
+        pass
     conn.commit()
     conn.close()
 
 def init_notifications_table():
-    """Create the notifications table if it doesn't exist yet.
-    username = NULL means a broadcast notification (all admins see it) —
-    used for events nobody has personally claimed yet, e.g. an alert
-    getting resolved, which every admin should be aware of.
-    type drives the icon/color in the UI (assignment, resolved,
-    false_positive, critical_alert, risk_escalated, system)."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS notifications (
@@ -230,24 +519,21 @@ def init_notifications_table():
             read_at TEXT
         )
     """)
-    # Migration: add the column if this table already existed from before this feature.
     try:
         conn.execute("ALTER TABLE notifications ADD COLUMN type TEXT NOT NULL DEFAULT 'system'")
     except sqlite3.OperationalError:
-        pass  # column already exists
+        pass
     conn.commit()
     conn.close()
 
 def init_production_lines_table():
-    """Create the production_lines table if it doesn't exist yet.
-    Simulated application-layer data — NOT part of the AI4I dataset."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS production_lines (
-            line_id TEXT PRIMARY KEY,      -- e.g. 'LINE-01'
+            line_id TEXT PRIMARY KEY,
             line_name TEXT NOT NULL,
             location TEXT,
-            status TEXT NOT NULL DEFAULT 'RUNNING'   -- RUNNING | WARNING | DOWN
+            status TEXT NOT NULL DEFAULT 'RUNNING'
         )
     """)
     conn.commit()
@@ -255,24 +541,19 @@ def init_production_lines_table():
 
 
 def init_assets_table():
-    """Create the assets table if it doesn't exist yet.
-    machine_id is the simulated stable machine identifier that groups
-    many AI4I decision_log/record_id observations under one physical
-    asset (see machine_id_for_record() for the mapping rule).
-    Simulated application-layer data — NOT part of the AI4I dataset."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS assets (
-            asset_id TEXT PRIMARY KEY,     -- e.g. 'AST-1005'
-            machine_id TEXT UNIQUE NOT NULL,  -- e.g. 'MCH-005'
+            asset_id TEXT PRIMARY KEY,
+            machine_id TEXT UNIQUE NOT NULL,
             machine_name TEXT NOT NULL,
             machine_type TEXT,
             line_id TEXT NOT NULL,
             location TEXT,
             manufacturer TEXT,
             model TEXT,
-            criticality TEXT NOT NULL DEFAULT 'MEDIUM',  -- LOW | MEDIUM | HIGH
-            status TEXT NOT NULL DEFAULT 'RUNNING',      -- RUNNING | WARNING | MAINTENANCE | DOWN
+            criticality TEXT NOT NULL DEFAULT 'MEDIUM',
+            status TEXT NOT NULL DEFAULT 'RUNNING',
             FOREIGN KEY (line_id) REFERENCES production_lines(line_id)
         )
     """)
@@ -280,9 +561,6 @@ def init_assets_table():
     conn.close()
 
 def seed_assets_and_lines():
-    """One-time seed of simulated production lines + assets, one asset
-    per machine_id produced by machine_id_for_record(). Safe to call
-    every startup — skips if data already exists."""
     conn = get_raw_conn()
     existing = conn.execute("SELECT COUNT(*) c FROM assets").fetchone()[0]
     if existing > 0:
@@ -325,22 +603,136 @@ def seed_assets_and_lines():
     conn.commit()
     conn.close()
 
+def seed_demo_maintenance_data():
+    """Deterministic (non-random) demo data across all 20 machines: every
+    machine gets at least one PM schedule; a subset also get work orders,
+    maintenance history, and a closed downtime event. Re-running this is
+    idempotent (no-op if pm_schedules already has rows) so it's safe to
+    call on every boot. Does NOT touch failure history — that stays derived
+    live from decision_log via /api/assets/<id>/failure-history.
+    """
+    conn = get_raw_conn()
+    existing = conn.execute("SELECT COUNT(*) c FROM pm_schedules").fetchone()[0]
+    if existing > 0:
+        conn.close()
+        return
+
+    now = datetime.utcnow()
+
+    # machine_index -> {
+    #   "pms": [(name, freq_type, freq_value, offset), ...],
+    #     DAYS offset       = days until next_due_at (negative = overdue)
+    #     TOOL_WEAR offset  = wear units "remaining" until due (negative = overdue)
+    #   "wo": number of manual work orders to create,
+    #   "maint": number of maintenance_records to create,
+    #   "downtime": whether to log one closed downtime event,
+    # }
+    MACHINE_PROFILES = {
+        1:  {"pms": [("Spindle Lubrication", "DAYS", 30, -3), ("Tool Change", "TOOL_WEAR", 200, -15)], "wo": 2, "maint": 2, "downtime": True},
+        2:  {"pms": [("Bearing Inspection", "DAYS", 60, 5)], "wo": 1, "maint": 1, "downtime": False},
+        3:  {"pms": [("Tool Change", "TOOL_WEAR", 200, 120)], "wo": 0, "maint": 0, "downtime": False},
+        4:  {"pms": [("Belt Replacement", "DAYS", 90, 40)], "wo": 0, "maint": 0, "downtime": True},
+        5:  {"pms": [("Hydraulic Fluid Check", "DAYS", 45, 4), ("Tool Change", "TOOL_WEAR", 150, 20)], "wo": 1, "maint": 1, "downtime": False},
+        6:  {"pms": [("Lubrication", "DAYS", 30, 22)], "wo": 0, "maint": 0, "downtime": False},
+        7:  {"pms": [("Coolant Filter", "DAYS", 30, -1)], "wo": 1, "maint": 1, "downtime": True},
+        8:  {"pms": [("Tool Change", "TOOL_WEAR", 200, 60)], "wo": 0, "maint": 0, "downtime": False},
+        9:  {"pms": [("Motor Inspection", "DAYS", 60, 30)], "wo": 1, "maint": 0, "downtime": False},
+        10: {"pms": [("Belt Tension Check", "DAYS", 45, 6)], "wo": 0, "maint": 1, "downtime": True},
+        11: {"pms": [("Tool Change", "TOOL_WEAR", 180, -5), ("General Inspection", "DAYS", 30, 15)], "wo": 2, "maint": 1, "downtime": False},
+        12: {"pms": [("Hydraulic Fluid Check", "DAYS", 45, 33)], "wo": 0, "maint": 0, "downtime": False},
+        13: {"pms": [("Bearing Inspection", "DAYS", 60, -8)], "wo": 1, "maint": 1, "downtime": True},
+        14: {"pms": [("Tool Change", "TOOL_WEAR", 200, 90)], "wo": 0, "maint": 0, "downtime": False},
+        15: {"pms": [("Lubrication", "DAYS", 30, 7)], "wo": 1, "maint": 1, "downtime": False},
+        16: {"pms": [("Coolant Filter", "DAYS", 30, 18)], "wo": 0, "maint": 0, "downtime": False},
+        17: {"pms": [("Tool Change", "TOOL_WEAR", 150, -25)], "wo": 0, "maint": 0, "downtime": True},
+        18: {"pms": [("General Inspection", "DAYS", 45, 3)], "wo": 1, "maint": 1, "downtime": False},
+        19: {"pms": [("Belt Replacement", "DAYS", 90, 50)], "wo": 0, "maint": 0, "downtime": False},
+        20: {"pms": [("Bearing Inspection", "DAYS", 60, -2), ("Tool Change", "TOOL_WEAR", 200, 10)], "wo": 1, "maint": 1, "downtime": True},
+    }
+
+    for i in range(1, NUM_MACHINES + 1):
+        machine_id = f"MCH-{i:03d}"
+        asset_id = f"AST-{1000 + i}"
+        profile = MACHINE_PROFILES[i]
+
+        # --- PM schedules ---
+        for pm_name, freq_type, freq_value, offset in profile["pms"]:
+            if freq_type == "DAYS":
+                next_due_at = (now + timedelta(days=offset)).isoformat(timespec='seconds')
+                conn.execute("""
+                    INSERT INTO pm_schedules
+                        (asset_id, machine_id, pm_name, frequency_type, frequency_value,
+                         next_due_at, status, created_by, created_at)
+                    VALUES (?, ?, ?, 'DAYS', ?, ?, 'ON_SCHEDULE', 'system', ?)
+                """, (asset_id, machine_id, pm_name, freq_value, next_due_at,
+                      now.isoformat(timespec='seconds')))
+            else:  # TOOL_WEAR
+                current_wear = get_latest_tool_wear(machine_id) or 0
+                last_performed_tool_wear = current_wear - (freq_value - offset)
+                conn.execute("""
+                    INSERT INTO pm_schedules
+                        (asset_id, machine_id, pm_name, frequency_type, frequency_value,
+                         last_performed_tool_wear, status, created_by, created_at)
+                    VALUES (?, ?, ?, 'TOOL_WEAR', ?, ?, 'ON_SCHEDULE', 'system', ?)
+                """, (asset_id, machine_id, pm_name, freq_value, last_performed_tool_wear,
+                      now.isoformat(timespec='seconds')))
+
+        # --- Work orders (manual — shows "Manual" source badge on the UI) ---
+        for n in range(profile["wo"]):
+            priority = "HIGH" if n == 0 else "MEDIUM"
+            conn.execute("""
+                INSERT INTO work_orders
+                    (record_id, machine_id, asset_id, title, description, priority,
+                     status, created_by, created_at, due_date)
+                VALUES (NULL, ?, ?, ?, ?, ?, 'OPEN', 'system', ?, ?)
+            """, (
+                machine_id, asset_id, f"Scheduled Check #{n + 1} — {machine_id}",
+                "Routine inspection flagged during planning.", priority,
+                now.isoformat(timespec='seconds'), compute_due_date(priority)
+            ))
+
+        # --- Maintenance records (standalone, not tied to a WO/PM) ---
+        for n in range(profile["maint"]):
+            performed_at = now - timedelta(days=5 * (n + 1))
+            conn.execute("""
+                INSERT INTO maintenance_records
+                    (asset_id, machine_id, maintenance_type, description,
+                     performed_by, performed_at, created_at)
+                VALUES (?, ?, 'PREVENTIVE', ?, 'system', ?, ?)
+            """, (
+                asset_id, machine_id, f"Routine maintenance performed on {machine_id}",
+                performed_at.isoformat(timespec='seconds'), now.isoformat(timespec='seconds')
+            ))
+
+        # --- Downtime (one closed event, a few hours ago) ---
+        if profile["downtime"]:
+            start = now - timedelta(hours=6 + (i % 5))
+            end = start + timedelta(minutes=25 + (i % 3) * 10)
+            conn.execute("""
+                INSERT INTO downtime_events
+                    (asset_id, machine_id, start_time, end_time, duration_minutes,
+                     reason_category, reason_detail, reported_by, created_at)
+                VALUES (?, ?, ?, ?, ?, 'UNPLANNED_FAILURE', ?, 'system', ?)
+            """, (
+                asset_id, machine_id, start.isoformat(timespec='seconds'),
+                end.isoformat(timespec='seconds'), int((end - start).total_seconds() // 60),
+                f"Unplanned stoppage on {machine_id}", now.isoformat(timespec='seconds')
+            ))
+
+    conn.commit()
+    conn.close()
+
 def init_assignment_column():
-    """Add assigned_to column to decision_log if it doesn't exist yet."""
     conn = get_raw_conn()
     try:
         conn.execute("ALTER TABLE decision_log ADD COLUMN assigned_to TEXT")
     except sqlite3.OperationalError:
-        pass  # column already exists
+        pass
     conn.commit()
     conn.close()
 
 
 def init_resolution_columns():
-    """Add resolved_by / resolved_at / resolution_note to decision_log if
-    missing. Populated when an alert is marked RESOLVED or FALSE_POSITIVE,
-    so record_detail can show who closed it, when, and why — without having
-    to parse it back out of audit_log's free-text details column."""
     conn = get_raw_conn()
     for col_sql in [
         "ALTER TABLE decision_log ADD COLUMN resolved_by TEXT",
@@ -350,15 +742,12 @@ def init_resolution_columns():
         try:
             conn.execute(col_sql)
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
     conn.commit()
     conn.close()
 
 
 def init_work_orders_table():
-    """Create the work_orders table if it doesn't exist yet.
-    A work order can originate from an AI alert (record_id set) or be
-    created manually by an admin/technician (record_id NULL)."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS work_orders (
@@ -386,12 +775,6 @@ def init_work_orders_table():
     conn.close()
 
 def init_workflow_columns():
-    """Week 3: technician-workflow columns for work_orders.
-    accepted_at / started_at track the technician's progression;
-    technician_notes is free-form process notes (editable while working);
-    resolution_note is the mandatory final "what was actually fixed";
-    verification_note/verified_by/verified_at record the reviewer's decision.
-    Safe to call every startup."""
     conn = get_raw_conn()
     for col_sql in [
         "ALTER TABLE work_orders ADD COLUMN accepted_at TEXT",
@@ -405,14 +788,80 @@ def init_workflow_columns():
         try:
             conn.execute(col_sql)
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
+    conn.commit()
+    conn.close()
+
+def init_pm_schedules_table():
+    """Create the pm_schedules table if it doesn't exist yet."""
+    conn = get_raw_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pm_schedules (
+            pm_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            machine_id TEXT NOT NULL,
+            pm_name TEXT NOT NULL,
+            frequency_type TEXT NOT NULL,          -- 'DAYS' | 'TOOL_WEAR'
+            frequency_value INTEGER NOT NULL,
+            last_performed_at TEXT,
+            last_performed_tool_wear INTEGER,
+            next_due_at TEXT,
+            status TEXT NOT NULL DEFAULT 'ON_SCHEDULE',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (asset_id) REFERENCES assets(asset_id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def init_maintenance_records_table():
+    """Create the maintenance_records table if it doesn't exist yet."""
+    conn = get_raw_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_records (
+            maint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            machine_id TEXT NOT NULL,
+            maintenance_type TEXT NOT NULL,        -- 'CORRECTIVE' | 'PREVENTIVE' | 'INSPECTION'
+            source_wo_id INTEGER,
+            source_pm_id INTEGER,
+            description TEXT NOT NULL,
+            performed_by TEXT NOT NULL,
+            performed_at TEXT NOT NULL,
+            downtime_minutes INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (asset_id) REFERENCES assets(asset_id),
+            FOREIGN KEY (source_wo_id) REFERENCES work_orders(wo_id),
+            FOREIGN KEY (source_pm_id) REFERENCES pm_schedules(pm_id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def init_downtime_events_table():
+    """Create the downtime_events table if it doesn't exist yet."""
+    conn = get_raw_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS downtime_events (
+            downtime_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            machine_id TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            duration_minutes INTEGER,
+            reason_category TEXT NOT NULL,         -- UNPLANNED_FAILURE | PLANNED_MAINTENANCE | CHANGEOVER | OTHER
+            reason_detail TEXT,
+            linked_wo_id INTEGER,
+            reported_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (asset_id) REFERENCES assets(asset_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
 def init_indexes():
-    """Add indexes for the columns that get filtered/sorted on every
-    dashboard/alerts/work-orders poll. Safe to call every startup —
-    CREATE INDEX IF NOT EXISTS is a no-op once the index exists."""
     conn = get_raw_conn()
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_decision_log_risk_score ON decision_log(risk_score DESC)",
@@ -421,11 +870,14 @@ def init_indexes():
         "CREATE INDEX IF NOT EXISTS idx_work_orders_machine_id ON work_orders(machine_id)",
         "CREATE INDEX IF NOT EXISTS idx_work_orders_status ON work_orders(status)",
         "CREATE INDEX IF NOT EXISTS idx_notifications_username ON notifications(username)",
+        "CREATE INDEX IF NOT EXISTS idx_pm_schedules_machine_id ON pm_schedules(machine_id)",
+        "CREATE INDEX IF NOT EXISTS idx_maintenance_records_machine_id ON maintenance_records(machine_id)",
+        "CREATE INDEX IF NOT EXISTS idx_downtime_events_open ON downtime_events(machine_id, end_time)",
     ]:
         try:
             conn.execute(sql)
         except sqlite3.OperationalError:
-            pass  # table/column not ready yet, or index already exists
+            pass
     conn.commit()
     conn.close()
 
@@ -434,7 +886,6 @@ def init_indexes():
 # ══════════════════════════════════════════
 
 def check_database_health():
-    """Runs a trivial query and times it. Returns dict with status + latency."""
     start = time.perf_counter()
     try:
         conn = get_db()
@@ -447,8 +898,6 @@ def check_database_health():
 
 
 def check_model_health():
-    """Checks the offline-scored model artifacts: metrics CSV freshness +
-    row-count consistency between decision_log and predictions."""
     result = {
         "status": "healthy",
         "metrics_file_exists": False,
@@ -459,7 +908,6 @@ def check_model_health():
         "error": None,
     }
     try:
-        # Metrics CSV freshness
         if os.path.exists(MODEL_METRICS_CSV):
             result["metrics_file_exists"] = True
             mtime = os.path.getmtime(MODEL_METRICS_CSV)
@@ -467,7 +915,6 @@ def check_model_health():
         else:
             result["status"] = "degraded"
 
-        # Row count consistency
         conn = get_db()
         dl_count = conn.execute("SELECT COUNT(*) c FROM decision_log").fetchone()['c']
         pred_count = conn.execute("SELECT COUNT(*) c FROM predictions").fetchone()['c']
@@ -488,8 +935,6 @@ def check_model_health():
 
 
 def check_system_resources():
-    """CPU + RAM usage via psutil. interval=None uses the delta since the
-    last call instead of blocking the request thread for 100ms."""
     try:
         cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
@@ -504,7 +949,6 @@ def check_system_resources():
         return {"status": "down", "error": str(e)}
 
 def init_health_log_table():
-    """Create the health_log table if it doesn't exist yet."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS health_log (
@@ -520,8 +964,6 @@ def init_health_log_table():
 
 
 def log_health_check(overall_status, api_latency_ms, db_latency_ms):
-    """Write one row to health_log, then trim table to the most recent 500 rows
-    so it doesn't grow unbounded during long-running demos."""
     conn = get_db()
     conn.execute(
         "INSERT INTO health_log (timestamp, overall_status, api_latency_ms, db_latency_ms) VALUES (?, ?, ?, ?)",
@@ -535,8 +977,6 @@ def log_health_check(overall_status, api_latency_ms, db_latency_ms):
     conn.commit()
 
 def get_last_incident():
-    """Find the most recent non-healthy health_log entry, and whether the
-    system has recovered since (a healthy check occurred after it)."""
     conn = get_db()
     incident = conn.execute("""
         SELECT id, timestamp, overall_status
@@ -571,13 +1011,11 @@ def get_uptime_string():
 
 
 def compute_health_score(api_status, db_status, model_status, system_status):
-    """Each component contributes 25 points. 'healthy' = full, 'degraded' = half, 'down' = 0."""
     weights = {"healthy": 25, "degraded": 12.5, "down": 0}
     score = sum(weights.get(s, 0) for s in [api_status, db_status, model_status, system_status])
     return round(score)
 
 def init_audit_log_table():
-    """Create the audit_log table if it doesn't exist yet. Safe to call every startup."""
     conn = get_raw_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -594,8 +1032,6 @@ def init_audit_log_table():
 
 
 def log_action(username, action, target='-', details='-'):
-    """Write one row to audit_log. username is the actor performing the action
-    (not necessarily the current_user — e.g. a failed login logs the attempted username)."""
     conn = get_db()
     conn.execute(
         "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
@@ -609,7 +1045,6 @@ def log_action(username, action, target='-', details='-'):
 # ══════════════════════════════════════════
 
 class User(UserMixin):
-    """Thin wrapper around a users-table row for Flask-Login."""
     def __init__(self, row):
         self.id = row['id']
         self.username = row['username']
@@ -658,8 +1093,6 @@ def load_user(user_id):
 
 @app.before_request
 def enforce_password_change():
-    """If the logged-in user still has must_change_password=1, force them to
-    the change-password page before they can reach anything else."""
     allowed_endpoints = {'change_password', 'logout', 'static'}
     if current_user.is_authenticated and getattr(current_user, 'must_change_password', False):
         if request.endpoint not in allowed_endpoints:
@@ -667,12 +1100,6 @@ def enforce_password_change():
 
 
 def role_required(*allowed_roles):
-    """RBAC decorator. Use AFTER @login_required, e.g.:
-    @app.route('/admin/users')
-    @login_required
-    @role_required('admin')
-    def manage_users(): ...
-    """
     def decorator(view_func):
         @wraps(view_func)
         def wrapped(*args, **kwargs):
@@ -684,7 +1111,7 @@ def role_required(*allowed_roles):
 
 
 # ══════════════════════════════════════════
-# AUTH ROUTES (UC1: Login)
+# AUTH ROUTES
 # ══════════════════════════════════════════
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -733,7 +1160,7 @@ def logout():
 
 
 # ══════════════════════════════════════════
-# ADMIN: Manage users (UC10, admin-only)
+# ADMIN: Manage users
 # ══════════════════════════════════════════
 
 @app.route('/admin/users')
@@ -1015,7 +1442,6 @@ def audit_log():
 @login_required
 @role_required('admin')
 def export_audit_log():
-    """Export filtered audit log entries as CSV."""
     action_filter = request.args.get('action', '').strip()
     search = request.args.get('search', '').strip()
     date_from = request.args.get('date_from', '').strip()
@@ -1056,13 +1482,6 @@ def export_audit_log():
 @login_required
 @role_required('admin')
 def api_technicians():
-    """
-    Get list of active technicians for assignment dropdown.
-    ---
-    responses:
-      200:
-        description: List of technician usernames
-    """
     conn = get_db()
     rows = conn.execute(
         "SELECT username FROM users WHERE role='technician' AND is_active=1 ORDER BY username"
@@ -1077,13 +1496,6 @@ def api_technicians():
 @app.route('/api/work-orders', methods=['GET'])
 @login_required
 def api_work_orders():
-    """
-    List work orders, optionally filtered by status/priority/assignee.
-    ---
-    responses:
-      200:
-        description: List of work orders
-    """
     try:
         conn = get_db()
         query = "SELECT * FROM work_orders WHERE 1=1"
@@ -1109,15 +1521,6 @@ def api_work_orders():
 @app.route('/api/work-orders/<int:wo_id>', methods=['GET'])
 @login_required
 def api_work_order_detail(wo_id):
-    """
-    Get a single work order, plus its source alert (if any).
-    ---
-    responses:
-      200:
-        description: Work order detail
-      404:
-        description: Not found
-    """
     try:
         conn = get_db()
         wo = conn.execute("SELECT * FROM work_orders WHERE wo_id=?", (wo_id,)).fetchone()
@@ -1139,31 +1542,27 @@ def api_work_order_detail(wo_id):
 @app.route('/api/work-orders/from-alert/<int:record_id>', methods=['POST'])
 @login_required
 def api_create_work_order_from_alert(record_id):
-    """
-    Create a Work Order from an existing High/Critical AI alert.
-    Blocks duplicate creation if an open WO already exists for this record.
-    ---
-    responses:
-      201:
-        description: Work order created
-      409:
-        description: Work order already exists for this alert
-      404:
-        description: Alert not found
-    """
     try:
         conn = get_db()
+        conn.execute("BEGIN IMMEDIATE")
         alert = conn.execute(
             "SELECT * FROM decision_log WHERE record_id=?", (record_id,)
         ).fetchone()
         if alert is None:
+            conn.rollback()
             return jsonify({"error": "Alert not found"}), 404
+        if alert['alert_status'] in ('RESOLVED', 'FALSE_POSITIVE'):
+            conn.rollback()
+            return jsonify({"error": "Reopen this alert before creating a work order"}), 400
 
         existing = conn.execute(
-            "SELECT wo_id FROM work_orders WHERE record_id=? AND status NOT IN ('COMPLETED','CANCELLED')",
+            "SELECT wo_id FROM work_orders WHERE record_id=? "
+            "AND status IN ('OPEN','ASSIGNED','ACCEPTED','IN_PROGRESS','PENDING_VERIFICATION') "
+            "ORDER BY created_at DESC, wo_id DESC LIMIT 1",
             (record_id,)
         ).fetchone()
         if existing:
+            conn.rollback()
             return jsonify({"error": "An open work order already exists for this alert",
                              "wo_id": existing['wo_id']}), 409
 
@@ -1174,8 +1573,8 @@ def api_create_work_order_from_alert(record_id):
 
         data = request.get_json(silent=True) or {}
         title = data.get('title') or f"{alert['risk_level']} Risk — Machine {machine_id}"
-        assigned_to = data.get('assigned_to') or alert['assigned_to']
-        initial_status = 'ASSIGNED' if assigned_to else 'OPEN'  # ← 新增這行
+        assigned_to = None
+        initial_status = 'OPEN'
 
         cur = conn.execute("""
             INSERT INTO work_orders
@@ -1186,7 +1585,7 @@ def api_create_work_order_from_alert(record_id):
         """, (
             record_id, machine_id, asset_id, title, alert['reasons'],
             alert['action'], alert['risk_level'], alert['risk_score'], priority,
-            initial_status, assigned_to, current_user.username,  # ← status 改用變數
+            initial_status, assigned_to, current_user.username,
             datetime.utcnow().isoformat(timespec='seconds'), due_date
         ))
         conn.commit()
@@ -1194,16 +1593,6 @@ def api_create_work_order_from_alert(record_id):
 
         log_action(current_user.username, 'CREATE_WORK_ORDER', f'WO #{wo_id}',
                    f'from alert record #{record_id}, priority={priority}')
-
-        if assigned_to:
-            create_notification(
-                username=assigned_to,
-                title=f"New Work Order #{wo_id} assigned",
-                message=f"{priority} priority work order created from alert #{record_id}.",
-                level="warning",
-                record_id=record_id,
-                notif_type="assignment",
-            )
 
         return jsonify({"message": "Work order created", "wo_id": wo_id}), 201
     except Exception as e:
@@ -1213,15 +1602,6 @@ def api_create_work_order_from_alert(record_id):
 @app.route('/api/work-orders', methods=['POST'])
 @login_required
 def api_create_work_order_manual():
-    """
-    Manually create a work order (not tied to an AI alert).
-    ---
-    responses:
-      201:
-        description: Work order created
-      400:
-        description: Missing required field
-    """
     try:
         data = request.get_json(silent=True) or {}
         title = (data.get('title') or '').strip()
@@ -1232,11 +1612,21 @@ def api_create_work_order_manual():
         if priority not in PRIORITY_DUE_HOURS:
             return jsonify({"error": "Invalid priority"}), 400
 
+        conn = get_db()
         assigned_to = data.get('assigned_to')
-        initial_status = 'ASSIGNED' if assigned_to else 'OPEN'  # ← 新增
+        if assigned_to:
+            if not current_user.is_admin:
+                return jsonify({"error": "Forbidden: Admin access required to assign a technician"}), 403
+            active_tech = conn.execute(
+                "SELECT username FROM users WHERE username=? AND role='technician' AND is_active=1",
+                (assigned_to,)
+            ).fetchone()
+            if active_tech is None:
+                return jsonify({"error": "Invalid technician"}), 400
+            assigned_to = active_tech['username']
+        initial_status = 'ASSIGNED' if assigned_to else 'OPEN'
 
         due_date = data.get('due_date') or compute_due_date(priority)
-        conn = get_db()
         cur = conn.execute("""
             INSERT INTO work_orders
                 (record_id, machine_id, asset_id, title, description,
@@ -1246,7 +1636,7 @@ def api_create_work_order_manual():
         """, (
             data.get('machine_id'), data.get('asset_id'), title,
             data.get('description'), data.get('recommended_action'),
-            priority, initial_status, assigned_to,  # ← status 改用變數
+            priority, initial_status, assigned_to,
             current_user.username, datetime.utcnow().isoformat(timespec='seconds'),
             due_date
         ))
@@ -1261,21 +1651,7 @@ def api_create_work_order_manual():
 @app.route('/api/work-orders/<int:wo_id>/status', methods=['POST'])
 @login_required
 def api_update_work_order_status(wo_id):
-    """
-    Cancel work order (Admin only).
-    ---
-    responses:
-      200:
-        description: Cancelled
-      400:
-        description: Invalid status
-      403:
-        description: Forbidden
-      404:
-        description: Not found
-    """
     try:
-        # 僅限管理員執行手動取消
         if not current_user.is_admin:
             return jsonify({"error": "Forbidden: Admin access required"}), 403
 
@@ -1321,6 +1697,7 @@ def api_accept_work_order(wo_id):
         (datetime.utcnow().isoformat(timespec='seconds'), wo_id)
     )
     conn.commit()
+    refresh_asset_status(wo['machine_id'])
     log_action(current_user.username, 'ACCEPT_WORK_ORDER', f'WO #{wo_id}', '-')
     return jsonify({"message": "Accepted", "status": "ACCEPTED"})
 
@@ -1343,6 +1720,7 @@ def api_start_work_order(wo_id):
         (datetime.utcnow().isoformat(timespec='seconds'), wo_id)
     )
     conn.commit()
+    refresh_asset_status(wo['machine_id'])
     log_action(current_user.username, 'START_WORK_ORDER', f'WO #{wo_id}', '-')
     return jsonify({"message": "Started", "status": "IN_PROGRESS"})
 
@@ -1350,8 +1728,7 @@ def api_start_work_order(wo_id):
 @app.route('/api/work-orders/<int:wo_id>/notes', methods=['POST'])
 @login_required
 def api_save_technician_notes(wo_id):
-    """Technician saves/updates process notes while actively working the WO
-    (diagnosis, observations) — separate from the final resolution_note."""
+    """Technician saves/updates process notes while actively working the WO."""
     data = request.get_json(silent=True) or {}
     notes = (data.get('technician_notes') or '').strip()
 
@@ -1373,9 +1750,7 @@ def api_save_technician_notes(wo_id):
 @app.route('/api/work-orders/<int:wo_id>/complete', methods=['POST'])
 @login_required
 def api_complete_work_order(wo_id):
-    """Technician marks the maintenance done. Requires resolution_note —
-    a mandatory record of what was actually fixed — and moves the WO to
-    PENDING_VERIFICATION rather than closing it outright."""
+    """Technician marks the maintenance done."""
     data = request.get_json(silent=True) or {}
     resolution_note = (data.get('resolution_note') or '').strip()
     if not resolution_note:
@@ -1403,7 +1778,7 @@ def api_complete_work_order(wo_id):
         username=wo['created_by'],
         title=f"Work Order #{wo_id} awaiting verification",
         message=f"{current_user.username} completed the work — ready for review.",
-        level="info", record_id=wo['record_id'], notif_type="verification_pending",  # ← 改這裡
+        level="info", record_id=wo['record_id'], notif_type="verification_pending",
     )
     return jsonify({"message": "Marked complete, pending verification", "status": "PENDING_VERIFICATION"})
 
@@ -1411,32 +1786,79 @@ def api_complete_work_order(wo_id):
 @app.route('/api/work-orders/<int:wo_id>/verify', methods=['POST'])
 @login_required
 def api_verify_work_order(wo_id):
-    """Admin or the WO's original creator reviews the completed work and
-    either closes the loop (approve) or sends it back for rework (reject)."""
+    """Admin or the WO's original creator reviews the completed work."""
     data = request.get_json(silent=True) or {}
-    decision = data.get('decision')  # 'approve' | 'reject'
+    decision = data.get('decision')
     verification_note = (data.get('verification_note') or '').strip()
     if decision not in ('approve', 'reject'):
         return jsonify({"error": "decision must be 'approve' or 'reject'"}), 400
 
     conn = get_db()
-    wo = conn.execute("SELECT * FROM work_orders WHERE wo_id=?", (wo_id,)).fetchone()
-    if wo is None:
-        return jsonify({"error": "Work order not found"}), 404
-    if not (current_user.is_admin or wo['created_by'] == current_user.username):
-        return jsonify({"error": "Forbidden: only an admin or the work order's creator can verify"}), 403
-    if wo['status'] != 'PENDING_VERIFICATION':
-        return jsonify({"error": f"Cannot verify from status {wo['status']}"}), 400
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        wo = conn.execute("SELECT * FROM work_orders WHERE wo_id=?", (wo_id,)).fetchone()
+        if wo is None:
+            conn.rollback()
+            return jsonify({"error": "Work order not found"}), 404
+        if not (current_user.is_admin or wo['created_by'] == current_user.username):
+            conn.rollback()
+            return jsonify({"error": "Forbidden: only an admin or the work order's creator can verify"}), 403
+        if wo['status'] != 'PENDING_VERIFICATION':
+            conn.rollback()
+            return jsonify({"error": f"Cannot verify from status {wo['status']}"}), 400
 
-    verified_at = datetime.utcnow().isoformat(timespec='seconds')
-    new_status = 'CLOSED' if decision == 'approve' else 'IN_PROGRESS'
+        verified_at = datetime.utcnow().isoformat(timespec='seconds')
+        new_status = 'CLOSED' if decision == 'approve' else 'IN_PROGRESS'
+        conn.execute(
+            "UPDATE work_orders SET status=?, verified_by=?, verified_at=?, verification_note=? WHERE wo_id=?",
+            (new_status, current_user.username, verified_at, verification_note or None, wo_id)
+        )
 
-    conn.execute(
-        "UPDATE work_orders SET status=?, verified_by=?, verified_at=?, verification_note=? WHERE wo_id=?",
-        (new_status, current_user.username, verified_at, verification_note or None, wo_id)
-    )
-    conn.commit()
-    log_action(current_user.username, 'VERIFY_WORK_ORDER', f'WO #{wo_id}', f'{decision} → {new_status}')
+        alert_resolved = False
+        if decision == 'approve':
+            conn.execute("""
+                INSERT INTO maintenance_records
+                    (asset_id, machine_id, maintenance_type, source_wo_id, description, performed_by, performed_at, created_at)
+                VALUES (?, ?, 'CORRECTIVE', ?, ?, ?, ?, ?)
+            """, (
+                wo['asset_id'], wo['machine_id'], wo_id,
+                wo['resolution_note'] or wo['title'],
+                wo['assigned_to'] or current_user.username,
+                wo['completed_at'] or verified_at, verified_at
+            ))
+            if wo['record_id']:
+                alert = conn.execute(
+                    "SELECT alert_status FROM decision_log WHERE record_id=?", (wo['record_id'],)
+                ).fetchone()
+                if alert and alert['alert_status'] not in ('RESOLVED', 'FALSE_POSITIVE'):
+                    conn.execute(
+                        "UPDATE decision_log SET alert_status='RESOLVED', resolved_by=?, resolved_at=?, resolution_note=? "
+                        "WHERE record_id=? AND alert_status NOT IN ('RESOLVED', 'FALSE_POSITIVE')",
+                        (current_user.username, verified_at,
+                         verification_note or wo['resolution_note'] or 'Work order verified and closed.',
+                         wo['record_id'])
+                    )
+                    alert_resolved = conn.execute("SELECT changes()").fetchone()[0] > 0
+
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
+            (verified_at, current_user.username, 'VERIFY_WORK_ORDER', f'WO #{wo_id}',
+             f'{decision} -> {new_status}')
+        )
+        if alert_resolved:
+            conn.execute(
+                "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
+                (verified_at, current_user.username, 'UPDATE_ALERT', f"Record #{wo['record_id']}",
+                 f'IN_PROGRESS->RESOLVED; verified by closing WO #{wo_id}')
+            )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    if decision == 'approve':
+        refresh_asset_status(wo['machine_id'])
+    _clear_response_cache()
 
     if wo['assigned_to']:
         create_notification(
@@ -1446,47 +1868,405 @@ def api_verify_work_order(wo_id):
                 "Verified and closed." if decision == 'approve' else "Please review and redo."),
             level="info" if decision == 'approve' else "warning",
             record_id=wo['record_id'],
-            notif_type="wo_closed" if decision == 'approve' else "wo_rejected",  # ← 改這裡
+            notif_type="wo_closed" if decision == 'approve' else "wo_rejected",
+        )
+    if alert_resolved:
+        create_notification(
+            username=None,
+            title=f"Alert #{wo['record_id']} Resolved",
+            message=f"Work Order #{wo_id} was verified and closed by {current_user.username}.",
+            level="info", record_id=wo['record_id'], notif_type="resolved",
         )
     return jsonify({"message": f"Work order {decision}d", "status": new_status})
 
 @app.route('/api/work-orders/<int:wo_id>/assign', methods=['POST'])
 @login_required
-@role_required('admin')
 def api_assign_work_order(wo_id):
-    """
-    Assign/reassign a work order to a technician.
-    ---
-    responses:
-      200:
-        description: Assigned
-    """
+    """Assign/reassign a work order to a technician."""
     try:
         data = request.get_json(silent=True) or {}
         username = (data.get('technician') or '').strip()
-        tech = get_user_by_username(username)
-        if tech is None or tech.role != 'technician':
-            return jsonify({"error": "Invalid technician"}), 400
-
         conn = get_db()
-        wo = conn.execute("SELECT status FROM work_orders WHERE wo_id=?", (wo_id,)).fetchone()
+        wo = conn.execute("SELECT status, assigned_to FROM work_orders WHERE wo_id=?", (wo_id,)).fetchone()
         if wo is None:
             return jsonify({"error": "Work order not found"}), 404
 
-        new_status = 'ASSIGNED' if wo['status'] == 'OPEN' else wo['status']
+        if current_user.is_admin:
+            if wo['status'] not in ('OPEN', 'ASSIGNED'):
+                return jsonify({"error": f"Cannot assign or reassign from status {wo['status']}"}), 400
+        else:
+            if username != current_user.username:
+                return jsonify({"error": "Forbidden: technicians may only claim work for themselves"}), 403
+            if wo['status'] != 'OPEN' or wo['assigned_to'] is not None:
+                return jsonify({"error": "Only an unassigned open work order can be claimed"}), 400
+
+        tech = conn.execute(
+            "SELECT username FROM users WHERE username=? AND role='technician' AND is_active=1",
+            (username,)
+        ).fetchone()
+        if tech is None:
+            return jsonify({"error": "Invalid technician"}), 400
+
+        new_status = 'ASSIGNED'
+        if wo['assigned_to'] == tech['username'] and wo['status'] == new_status:
+            return jsonify({"message": "Already assigned", "assigned_to": tech['username'],
+                            "status": new_status})
         conn.execute("UPDATE work_orders SET assigned_to=?, status=? WHERE wo_id=?",
-                     (tech.username, new_status, wo_id))
+                     (tech['username'], new_status, wo_id))
         conn.commit()
         create_notification(
-            username=tech.username,
+            username=tech['username'],
             title=f"Work Order #{wo_id} assigned to you",
             message="You've been assigned a new work order.",
             level="warning", notif_type="assignment",
         )
-        log_action(current_user.username, 'ASSIGN_WORK_ORDER', f'WO #{wo_id}', f'assigned_to={tech.username}')
-        return jsonify({"message": "Assigned", "assigned_to": tech.username, "status": new_status})
+        log_action(current_user.username, 'ASSIGN_WORK_ORDER', f'WO #{wo_id}',
+                   f"{wo['assigned_to'] or 'unassigned'}->{tech['username']}")
+        return jsonify({"message": "Assigned", "assigned_to": tech['username'], "status": new_status})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════
+# API ENDPOINTS: PM SCHEDULES
+# ══════════════════════════════════════════
+
+@app.route('/api/assets/<asset_id>/pm-schedules')
+@login_required
+def api_asset_pm_schedules(asset_id):
+    """
+    List PM schedules for this asset with live-computed status.
+    ---
+    responses:
+      200:
+        description: PM schedules with status/status_detail
+      404:
+        description: Asset not found
+    """
+    conn = get_db()
+    asset = conn.execute("SELECT asset_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+    if asset is None:
+        return jsonify({"error": "Asset not found"}), 404
+    rows = conn.execute("SELECT * FROM pm_schedules WHERE asset_id=? ORDER BY pm_id", (asset_id,)).fetchall()
+    result = []
+    for pm in rows:
+        status, extra = compute_pm_status(pm)
+        item = dict(pm)
+        item['status'] = status
+        item['status_detail'] = extra
+        result.append(item)
+    return jsonify(result)
+
+
+@app.route('/api/pm-schedules', methods=['POST'])
+@login_required
+@role_required('admin')
+def api_create_pm_schedule():
+    """
+    Create a PM schedule for an asset.
+    ---
+    responses:
+      201:
+        description: PM schedule created
+      400:
+        description: Missing/invalid field
+      404:
+        description: Asset not found
+    """
+    data = request.get_json(silent=True) or {}
+    asset_id = data.get('asset_id')
+    pm_name = (data.get('pm_name') or '').strip()
+    frequency_type = data.get('frequency_type')
+    frequency_value = data.get('frequency_value')
+    if not asset_id or not pm_name:
+        return jsonify({"error": "asset_id and pm_name are required"}), 400
+    if frequency_type not in ('DAYS', 'TOOL_WEAR'):
+        return jsonify({"error": "frequency_type must be 'DAYS' or 'TOOL_WEAR'"}), 400
+    try:
+        frequency_value = int(frequency_value)
+        if frequency_value <= 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return jsonify({"error": "frequency_value must be a positive integer"}), 400
+    conn = get_db()
+    asset = conn.execute("SELECT machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+    if asset is None:
+        return jsonify({"error": "Asset not found"}), 404
+    now = datetime.utcnow()
+    next_due_at = (now + timedelta(days=frequency_value)).isoformat(timespec='seconds') if frequency_type == 'DAYS' else None
+    current_wear = get_latest_tool_wear(asset['machine_id']) if frequency_type == 'TOOL_WEAR' else None
+    cur = conn.execute("""
+        INSERT INTO pm_schedules
+            (asset_id, machine_id, pm_name, frequency_type, frequency_value,
+             last_performed_tool_wear, next_due_at, status, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ON_SCHEDULE', ?, ?)
+    """, (asset_id, asset['machine_id'], pm_name, frequency_type, frequency_value,
+          current_wear, next_due_at, current_user.username, now.isoformat(timespec='seconds')))
+    conn.commit()
+    pm_id = cur.lastrowid
+    log_action(current_user.username, 'CREATE_PM_SCHEDULE', f'PM #{pm_id}', f'asset={asset_id}')
+    return jsonify({"message": "PM schedule created", "pm_id": pm_id}), 201
+
+
+@app.route('/api/pm-schedules/<int:pm_id>/complete', methods=['POST'])
+@login_required
+def api_complete_pm_schedule(pm_id):
+    """
+    Mark a PM as performed today — resets the due baseline and auto-logs
+    a maintenance_records entry.
+    ---
+    responses:
+      200:
+        description: PM marked complete
+      404:
+        description: PM schedule not found
+    """
+    data = request.get_json(silent=True) or {}
+    note = (data.get('note') or '').strip()
+    conn = get_db()
+    pm = conn.execute("SELECT * FROM pm_schedules WHERE pm_id=?", (pm_id,)).fetchone()
+    if pm is None:
+        return jsonify({"error": "PM schedule not found"}), 404
+    now = datetime.utcnow()
+    current_wear = get_latest_tool_wear(pm['machine_id']) if pm['frequency_type'] == 'TOOL_WEAR' else None
+    next_due_at = compute_next_pm_due(pm, now)
+    conn.execute("""
+        UPDATE pm_schedules SET last_performed_at=?, last_performed_tool_wear=?, next_due_at=?, status='ON_SCHEDULE'
+        WHERE pm_id=?
+    """, (now.isoformat(timespec='seconds'), current_wear, next_due_at, pm_id))
+    conn.execute("""
+        INSERT INTO maintenance_records
+            (asset_id, machine_id, maintenance_type, source_pm_id, description, performed_by, performed_at, created_at)
+        VALUES (?, ?, 'PREVENTIVE', ?, ?, ?, ?, ?)
+    """, (pm['asset_id'], pm['machine_id'], pm_id, note or f"Completed PM: {pm['pm_name']}",
+          current_user.username, now.isoformat(timespec='seconds'), now.isoformat(timespec='seconds')))
+    conn.commit()
+    refresh_asset_status(pm['machine_id'])
+    log_action(current_user.username, 'COMPLETE_PM_SCHEDULE', f'PM #{pm_id}', '-')
+    return jsonify({"message": "PM marked complete", "next_due_at": next_due_at})
+
+
+@app.route('/api/pm-schedules/<int:pm_id>', methods=['DELETE'])
+@login_required
+@role_required('admin')
+def api_delete_pm_schedule(pm_id):
+    """Delete a PM schedule (admin only)."""
+    conn = get_db()
+    pm = conn.execute("SELECT pm_name FROM pm_schedules WHERE pm_id=?", (pm_id,)).fetchone()
+    if pm is None:
+        return jsonify({"error": "PM schedule not found"}), 404
+    conn.execute("DELETE FROM pm_schedules WHERE pm_id=?", (pm_id,))
+    conn.commit()
+    log_action(current_user.username, 'DELETE_PM_SCHEDULE', f'PM #{pm_id}', pm['pm_name'])
+    return jsonify({"message": "PM schedule deleted"})
+
+
+# ══════════════════════════════════════════
+# API ENDPOINTS: MAINTENANCE RECORDS
+# ══════════════════════════════════════════
+
+@app.route('/api/assets/<asset_id>/maintenance-records')
+@login_required
+def api_asset_maintenance_records(asset_id):
+    """
+    Get maintenance history for an asset, newest first.
+    ---
+    responses:
+      200:
+        description: List of maintenance records
+      404:
+        description: Asset not found
+    """
+    conn = get_db()
+    if conn.execute("SELECT 1 FROM assets WHERE asset_id=?", (asset_id,)).fetchone() is None:
+        return jsonify({"error": "Asset not found"}), 404
+    df = pd.read_sql(
+        "SELECT * FROM maintenance_records WHERE asset_id=? ORDER BY performed_at DESC",
+        conn, params=[asset_id]
+    )
+    return jsonify(df_to_records(df))
+
+
+@app.route('/api/maintenance-records', methods=['POST'])
+@login_required
+def api_create_maintenance_record():
+    """
+    Manually log a maintenance record not tied to a Work Order or PM.
+    ---
+    responses:
+      201:
+        description: Maintenance record created
+      400:
+        description: Missing required field
+      404:
+        description: Asset not found
+    """
+    data = request.get_json(silent=True) or {}
+    asset_id = data.get('asset_id')
+    description = (data.get('description') or '').strip()
+    maintenance_type = data.get('maintenance_type', 'CORRECTIVE')
+    if not asset_id or not description:
+        return jsonify({"error": "asset_id and description are required"}), 400
+    if maintenance_type not in ('CORRECTIVE', 'PREVENTIVE', 'INSPECTION'):
+        return jsonify({"error": "Invalid maintenance_type"}), 400
+    conn = get_db()
+    asset = conn.execute("SELECT machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+    if asset is None:
+        return jsonify({"error": "Asset not found"}), 404
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    cur = conn.execute("""
+        INSERT INTO maintenance_records
+            (asset_id, machine_id, maintenance_type, description, performed_by, performed_at, downtime_minutes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (asset_id, asset['machine_id'], maintenance_type, description,
+          current_user.username, now, data.get('downtime_minutes'), now))
+    conn.commit()
+    maint_id = cur.lastrowid
+    log_action(current_user.username, 'CREATE_MAINTENANCE_RECORD', f'Maint #{maint_id}', f'asset={asset_id}')
+    return jsonify({"message": "Maintenance record created", "maint_id": maint_id}), 201
+
+
+# ══════════════════════════════════════════
+# API ENDPOINTS: DOWNTIME EVENTS
+# ══════════════════════════════════════════
+
+@app.route('/api/assets/<asset_id>/downtime')
+@login_required
+def api_asset_downtime(asset_id):
+    """
+    Get downtime events for an asset, newest first.
+    ---
+    responses:
+      200:
+        description: List of downtime events
+      404:
+        description: Asset not found
+    """
+    conn = get_db()
+    if conn.execute("SELECT 1 FROM assets WHERE asset_id=?", (asset_id,)).fetchone() is None:
+        return jsonify({"error": "Asset not found"}), 404
+    df = pd.read_sql(
+        "SELECT * FROM downtime_events WHERE asset_id=? ORDER BY start_time DESC", conn, params=[asset_id]
+    )
+    return jsonify(df_to_records(df))
+
+
+@app.route('/api/downtime/start', methods=['POST'])
+@login_required
+def api_start_downtime():
+    """
+    Log the start of a downtime event; immediately forces the asset to DOWN.
+    ---
+    responses:
+      201:
+        description: Downtime started
+      400:
+        description: Missing field or already down
+      404:
+        description: Asset not found
+    """
+    data = request.get_json(silent=True) or {}
+    asset_id = data.get('asset_id')
+    reason_category = data.get('reason_category')
+    allowed = ('UNPLANNED_FAILURE', 'PLANNED_MAINTENANCE', 'CHANGEOVER', 'OTHER')
+    if not asset_id or reason_category not in allowed:
+        return jsonify({"error": f"asset_id required, reason_category must be one of {allowed}"}), 400
+    conn = get_db()
+    asset = conn.execute("SELECT machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+    if asset is None:
+        return jsonify({"error": "Asset not found"}), 404
+    existing_open = conn.execute(
+        "SELECT downtime_id FROM downtime_events WHERE asset_id=? AND end_time IS NULL", (asset_id,)
+    ).fetchone()
+    if existing_open:
+        return jsonify({"error": "This asset already has an open downtime event",
+                         "downtime_id": existing_open['downtime_id']}), 400
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    cur = conn.execute("""
+        INSERT INTO downtime_events
+            (asset_id, machine_id, start_time, reason_category, reason_detail, linked_wo_id, reported_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (asset_id, asset['machine_id'], now, reason_category,
+          data.get('reason_detail'), data.get('linked_wo_id'), current_user.username, now))
+    conn.commit()
+    downtime_id = cur.lastrowid
+    refresh_asset_status(asset['machine_id'])
+    log_action(current_user.username, 'START_DOWNTIME', f'Downtime #{downtime_id}', f'asset={asset_id}')
+    create_notification(
+        username=None, title=f"Machine Down — {asset_id}",
+        message=f"{current_user.username} logged downtime: {reason_category}",
+        level="critical", notif_type="critical_alert",
+    )
+    return jsonify({"message": "Downtime started", "downtime_id": downtime_id}), 201
+
+
+@app.route('/api/downtime/<int:downtime_id>/end', methods=['POST'])
+@login_required
+def api_end_downtime(downtime_id):
+    """
+    Close a downtime event and re-evaluate the asset's status.
+    ---
+    responses:
+      200:
+        description: Downtime ended
+      400:
+        description: Already closed
+      404:
+        description: Not found
+    """
+    conn = get_db()
+    dt = conn.execute("SELECT * FROM downtime_events WHERE downtime_id=?", (downtime_id,)).fetchone()
+    if dt is None:
+        return jsonify({"error": "Downtime event not found"}), 404
+    if dt['end_time'] is not None:
+        return jsonify({"error": "This downtime event is already closed"}), 400
+    now = datetime.utcnow()
+    duration_minutes = int((now - datetime.fromisoformat(dt['start_time'])).total_seconds() // 60)
+    conn.execute(
+        "UPDATE downtime_events SET end_time=?, duration_minutes=? WHERE downtime_id=?",
+        (now.isoformat(timespec='seconds'), duration_minutes, downtime_id)
+    )
+    conn.commit()
+    new_status = refresh_asset_status(dt['machine_id'])
+    log_action(current_user.username, 'END_DOWNTIME', f'Downtime #{downtime_id}', f'{duration_minutes} min')
+    return jsonify({"message": "Downtime ended", "duration_minutes": duration_minutes, "asset_status": new_status})
+
+
+# ══════════════════════════════════════════
+# API ENDPOINT: FAILURE HISTORY
+# ══════════════════════════════════════════
+
+@app.route('/api/assets/<asset_id>/failure-history')
+@login_required
+def api_asset_failure_history(asset_id):
+    """
+    Get historical failures (actual_failure=1) for this asset's machine.
+    ---
+    responses:
+      200:
+        description: Failure records for this asset
+      404:
+        description: Asset not found
+    """
+    conn = get_db()
+    asset = conn.execute("SELECT asset_id, machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+    if asset is None:
+        return jsonify({"error": "Asset not found"}), 404
+    machine_id = asset['machine_id']
+    try:
+        machine_idx = int(machine_id.split('-')[1])
+    except (IndexError, ValueError):
+        return jsonify({"error": f"Malformed machine_id '{machine_id}'"}), 500
+    target_remainder = (machine_idx - 1) % NUM_MACHINES
+    df = pd.read_sql("""
+        SELECT record_id, timestamp, air_temp, process_temp, rpm, torque, tool_wear,
+               hdf_risk, pwf_risk, osf_risk, risk_score, risk_level, action, reasons
+        FROM decision_log
+        WHERE record_id % ? = ? AND actual_failure = 1
+        ORDER BY record_id DESC
+    """, conn, params=[NUM_MACHINES, target_remainder])
+    return jsonify({"asset_id": asset['asset_id'], "machine_id": machine_id,
+                    "count": len(df), "failures": df_to_records(df)})
 
 
 # ══════════════════════════════════════════
@@ -1499,23 +2279,34 @@ def assign_alert(record_id):
     try:
         data = request.get_json(silent=True) or {}
         conn = get_db()
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT assigned_to, alert_status FROM decision_log WHERE record_id=?",
             (record_id,)
         ).fetchone()
         if row is None:
+            conn.rollback()
             return jsonify({"error": "Record not found"}), 404
+        if row['alert_status'] in ('RESOLVED', 'FALSE_POSITIVE'):
+            conn.rollback()
+            return jsonify({"error": "Cannot assign or reassign a closed alert"}), 400
 
         if current_user.is_admin:
-            target_username = data.get('technician', '').strip()
+            target_username = (data.get('technician') or '').strip()
             if not target_username:
+                conn.rollback()
                 return jsonify({"error": "technician username required"}), 400
-            tech = get_user_by_username(target_username)
-            if tech is None or tech.role != 'technician':
+            tech = conn.execute(
+                "SELECT username FROM users WHERE username=? AND role='technician' AND is_active=1",
+                (target_username,)
+            ).fetchone()
+            if tech is None:
+                conn.rollback()
                 return jsonify({"error": "Invalid technician"}), 400
-            new_assignee = tech.username
+            new_assignee = tech['username']
         else:
             if row['assigned_to']:
+                conn.rollback()
                 return jsonify({"error": "Alert is already assigned"}), 403
             new_assignee = current_user.username
 
@@ -1523,21 +2314,45 @@ def assign_alert(record_id):
         if new_status in ('OPEN', 'OK'):
             new_status = 'ASSIGNED'
 
+        if row['assigned_to'] == new_assignee:
+            if row['alert_status'] != new_status:
+                conn.execute(
+                    "UPDATE decision_log SET alert_status=? WHERE record_id=?",
+                    (new_status, record_id)
+                )
+                conn.execute(
+                    "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
+                    (datetime.utcnow().isoformat(timespec='seconds'), current_user.username,
+                     'UPDATE_ALERT', f'Record #{record_id}', f"{row['alert_status']}->{new_status}")
+                )
+                conn.commit()
+                _clear_response_cache()
+            else:
+                conn.rollback()
+            return jsonify({"message": "Already assigned", "assigned_to": new_assignee,
+                            "alert_status": new_status})
+
         conn.execute(
             "UPDATE decision_log SET assigned_to=?, alert_status=? WHERE record_id=?",
             (new_assignee, new_status, record_id)
         )
+        previous_assignee = row['assigned_to']
+        details = f'previous_assignee={previous_assignee or "(unassigned)"}; new_assignee={new_assignee}'
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
+            (datetime.utcnow().isoformat(timespec='seconds'), current_user.username,
+             'ASSIGN_ALERT', f'Record #{record_id}', details)
+        )
         conn.commit()
+        _clear_response_cache()
         create_notification(
             username=new_assignee,
-            title = f"Alert #{record_id} assigned to you",
+            title=f"Alert #{record_id} assigned to you",
             message=f"You've been assigned to investigate record #{record_id}.",
             level="warning",
             record_id=record_id,
             notif_type="assignment",
-            )
-        log_action(current_user.username, 'ASSIGN_ALERT', f'Record #{record_id}',
-                   f'assigned_to={new_assignee}')
+        )
         return jsonify({
             "message": f"Record {record_id} assigned to {new_assignee}.",
             "assigned_to": new_assignee,
@@ -1549,56 +2364,152 @@ def assign_alert(record_id):
 @app.route('/api/production-lines')
 @login_required
 def api_production_lines():
-    """
-    Get all production lines with live machine-status aggregation.
-    ---
-    responses:
-      200:
-        description: List of production lines with asset counts
-    """
     try:
         conn = get_db()
         lines = conn.execute("SELECT * FROM production_lines ORDER BY line_id").fetchall()
+        latest_decisions = _latest_decisions_by_machine(conn)
         result = []
         for line in lines:
-            counts = conn.execute("""
-                SELECT status, COUNT(*) c FROM assets WHERE line_id=? GROUP BY status
-            """, (line['line_id'],)).fetchall()
-            status_counts = {row['status']: row['c'] for row in counts}
+            assets = conn.execute(
+                "SELECT * FROM assets WHERE line_id=? ORDER BY machine_id", (line['line_id'],)
+            ).fetchall()
+            snapshots = [_machine_snapshot(conn, asset, latest_decisions) for asset in assets]
+            status_counts = {}
+            for machine in snapshots:
+                status_counts[machine['status']] = status_counts.get(machine['status'], 0) + 1
+            line_status = (
+                'DOWN' if status_counts.get('DOWN', 0) else
+                'WARNING' if status_counts.get('WARNING', 0) or status_counts.get('MAINTENANCE', 0) else
+                'RUNNING'
+            )
+            risk_counts = {}
+            for machine in snapshots:
+                if machine['risk_level']:
+                    risk_counts[machine['risk_level']] = risk_counts.get(machine['risk_level'], 0) + 1
             result.append({
                 **dict(line),
+                'status': line_status,
                 "asset_count": sum(status_counts.values()),
-                "status_counts": status_counts
+                "status_counts": status_counts,
+                "risk_counts": risk_counts,
+                "kpis": _kpis_for_machines(conn, [a['machine_id'] for a in assets]),
             })
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/factory-overview')
+@login_required
+def api_factory_overview():
+    """Return the complete factory -> line -> machine digital-twin snapshot."""
+    try:
+        conn = get_db()
+        latest_decisions = _latest_decisions_by_machine(conn)
+        assets = conn.execute("SELECT * FROM assets ORDER BY line_id, machine_id").fetchall()
+        machines = [_machine_snapshot(conn, asset, latest_decisions) for asset in assets]
+        lines = []
+        for line in conn.execute("SELECT * FROM production_lines ORDER BY line_id").fetchall():
+            line_machines = [m for m in machines if m['line_id'] == line['line_id']]
+            status_counts = {}
+            risk_counts = {}
+            maintenance_counts = {}
+            for machine in line_machines:
+                status_counts[machine['status']] = status_counts.get(machine['status'], 0) + 1
+                if machine['risk_level']:
+                    risk_counts[machine['risk_level']] = risk_counts.get(machine['risk_level'], 0) + 1
+                maintenance_counts[machine['maintenance_status']] = maintenance_counts.get(
+                    machine['maintenance_status'], 0
+                ) + 1
+            line_status = (
+                'DOWN' if status_counts.get('DOWN', 0) else
+                'WARNING' if status_counts.get('WARNING', 0) or status_counts.get('MAINTENANCE', 0) else
+                'RUNNING'
+            )
+            lines.append({
+                **dict(line),
+                'status': line_status,
+                'asset_count': len(line_machines),
+                'status_counts': status_counts,
+                'risk_counts': risk_counts,
+                'maintenance_counts': maintenance_counts,
+                'kpis': _kpis_for_machines(conn, [m['machine_id'] for m in line_machines]),
+                'machines': line_machines,
+            })
+
+        all_machine_ids = [m['machine_id'] for m in machines]
+        status_summary = {}
+        risk_summary = {}
+        maintenance_summary = {}
+        for machine in machines:
+            status_summary[machine['status']] = status_summary.get(machine['status'], 0) + 1
+            if machine['risk_level']:
+                risk_summary[machine['risk_level']] = risk_summary.get(machine['risk_level'], 0) + 1
+            maintenance_summary[machine['maintenance_status']] = maintenance_summary.get(
+                machine['maintenance_status'], 0
+            ) + 1
+        return jsonify({
+            'factory': {
+                'name': 'Factory Operations Centre',
+                'machine_count': len(machines),
+                'line_count': len(lines),
+                'status_summary': status_summary,
+                'risk_summary': risk_summary,
+                'maintenance_summary': maintenance_summary,
+                'kpis': _kpis_for_machines(conn, all_machine_ids),
+                'failure_trend': _failure_trend(conn, all_machine_ids),
+                'data_source': 'Persisted SQLite decision_log and downtime_events (AI4I dataset-derived)',
+                'last_updated': conn.execute(
+                    "SELECT MAX(timestamp) t FROM decision_log"
+                ).fetchone()['t'],
+            },
+            'lines': lines,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/production-lines/<line_id>')
 @login_required
 def api_production_line_detail(line_id):
-    """
-    Get a single production line plus its assets.
-    ---
-    parameters:
-      - name: line_id
-        in: path
-        type: string
-        required: true
-    responses:
-      200:
-        description: Production line detail with asset list
-      404:
-        description: Line not found
-    """
     try:
         conn = get_db()
         line = conn.execute("SELECT * FROM production_lines WHERE line_id=?", (line_id,)).fetchone()
         if line is None:
             return jsonify({"error": "Production line not found"}), 404
         assets = conn.execute("SELECT * FROM assets WHERE line_id=? ORDER BY asset_id", (line_id,)).fetchall()
-        return jsonify({**dict(line), "assets": df_to_records(pd.DataFrame([dict(a) for a in assets]))})
+        latest_decisions = _latest_decisions_by_machine(conn)
+        snapshots = [_machine_snapshot(conn, asset, latest_decisions) for asset in assets]
+        status_counts = {}
+        risk_counts = {}
+        maintenance_counts = {}
+        for machine in snapshots:
+            status_counts[machine['status']] = status_counts.get(machine['status'], 0) + 1
+            if machine['risk_level']:
+                risk_counts[machine['risk_level']] = risk_counts.get(machine['risk_level'], 0) + 1
+            maintenance_counts[machine['maintenance_status']] = maintenance_counts.get(
+                machine['maintenance_status'], 0
+            ) + 1
+        line_status = (
+            'DOWN' if status_counts.get('DOWN', 0) else
+            'WARNING' if status_counts.get('WARNING', 0) or status_counts.get('MAINTENANCE', 0) else
+            'RUNNING'
+        )
+        return jsonify({
+            **dict(line),
+            'status': line_status,
+            'assets': snapshots,
+            'machines': snapshots,
+            'status_counts': status_counts,
+            'risk_counts': risk_counts,
+            'maintenance_counts': maintenance_counts,
+            'kpis': _kpis_for_machines(conn, [a['machine_id'] for a in assets]),
+            'failure_trend': _failure_trend(conn, [a['machine_id'] for a in assets]),
+            'data_source': 'Persisted SQLite decision_log and downtime_events (AI4I dataset-derived)',
+            'last_updated': conn.execute(
+                "SELECT MAX(timestamp) t FROM decision_log"
+            ).fetchone()['t'],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1606,18 +2517,6 @@ def api_production_line_detail(line_id):
 @app.route('/api/assets')
 @login_required
 def api_assets():
-    """
-    Get all assets, optionally filtered by production line.
-    ---
-    parameters:
-      - name: line_id
-        in: query
-        type: string
-        required: false
-    responses:
-      200:
-        description: List of assets
-    """
     try:
         conn = get_db()
         line_id = request.args.get('line_id')
@@ -1627,7 +2526,8 @@ def api_assets():
             ).fetchall()
         else:
             assets = conn.execute("SELECT * FROM assets ORDER BY asset_id").fetchall()
-        return jsonify(df_to_records(pd.DataFrame([dict(a) for a in assets])))
+        latest_decisions = _latest_decisions_by_machine(conn)
+        return jsonify([_machine_snapshot(conn, asset, latest_decisions) for asset in assets])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1635,20 +2535,6 @@ def api_assets():
 @app.route('/api/assets/<asset_id>')
 @login_required
 def api_asset_detail(asset_id):
-    """
-    Get a single asset plus the production line it belongs to.
-    ---
-    parameters:
-      - name: asset_id
-        in: path
-        type: string
-        required: true
-    responses:
-      200:
-        description: Asset detail
-      404:
-        description: Asset not found
-    """
     try:
         conn = get_db()
         asset = conn.execute("SELECT * FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
@@ -1657,7 +2543,9 @@ def api_asset_detail(asset_id):
         line = conn.execute(
             "SELECT * FROM production_lines WHERE line_id=?", (asset['line_id'],)
         ).fetchone()
-        return jsonify({**dict(asset), "line": dict(line) if line else None})
+        latest_decisions = _latest_decisions_by_machine(conn)
+        snapshot = _machine_snapshot(conn, asset, latest_decisions)
+        return jsonify({**snapshot, "line": dict(line) if line else None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1665,30 +2553,6 @@ def api_asset_detail(asset_id):
 @app.route('/api/assets/<asset_id>/observations')
 @login_required
 def api_asset_observations(asset_id):
-    """
-    Get recent AI4I sensor observations (decision_log rows) belonging to
-    this asset. Since AI4I records have no native machine reference, rows
-    are matched back to the asset via the same deterministic mapping used
-    by machine_id_for_record(): record_id -> ((record_id % NUM_MACHINES) + 1)
-    -> MCH-XXX. This is the inverse of that mapping, filtered by SQL modulo
-    instead of iterating every record_id in Python.
-    ---
-    parameters:
-      - name: asset_id
-        in: path
-        type: string
-        required: true
-      - name: limit
-        in: query
-        type: integer
-        required: false
-        description: Max rows to return (default 20, max 200).
-    responses:
-      200:
-        description: Recent observations for this asset's machine
-      404:
-        description: Asset not found
-    """
     try:
         conn = get_db()
         asset = conn.execute(
@@ -1701,7 +2565,7 @@ def api_asset_observations(asset_id):
         try:
             machine_idx = int(machine_id.split('-')[1])
         except (IndexError, ValueError):
-            return jsonify({"error": f"Malformed machine_id '{machine_id}' for this asset"}), 500
+            return jsonify({"error": f"Malformed machine_id '{machine_id}'"}), 500
 
         limit = request.args.get('limit', 20, type=int)
         limit = max(1, min(limit, 200))
@@ -1733,21 +2597,6 @@ def api_asset_observations(asset_id):
 @app.route('/api/assets/<asset_id>/work-orders')
 @login_required
 def api_asset_work_orders(asset_id):
-    """
-    Get work orders linked to this asset's machine (by machine_id),
-    newest first.
-    ---
-    parameters:
-      - name: asset_id
-        in: path
-        type: string
-        required: true
-    responses:
-      200:
-        description: Work orders for this asset
-      404:
-        description: Asset not found
-    """
     try:
         conn = get_db()
         asset = conn.execute(
@@ -1769,44 +2618,38 @@ def api_asset_work_orders(asset_id):
 @app.route('/api/summary')
 @login_required
 def api_summary():
-    """
-    Get system summary.
-    ---
-    responses:
-      200:
-        description: Summary statistics
-    """
     try:
+        cached = _cached_response('summary')
+        if cached is not None:
+            return jsonify(cached)
         conn = get_db()
-        df       = pd.read_sql("SELECT risk_level, COUNT(*) as count FROM decision_log GROUP BY risk_level", conn)
-        total    = pd.read_sql("SELECT COUNT(*) as total FROM decision_log", conn)['total'][0]
-        alerts   = pd.read_sql("SELECT COUNT(*) as c FROM decision_log WHERE alert_status='OPEN'", conn)['c'][0]
-        high     = pd.read_sql("SELECT COUNT(*) as c FROM decision_log WHERE risk_level IN ('High','Critical')", conn)['c'][0]
-        return jsonify({
-            "total_records":  int(total),
-            "open_alerts":    int(alerts),
-            "high_risk":      int(high),
-            "distribution":   df.to_dict(orient='records')
-        })
+        distribution = conn.execute(
+            "SELECT risk_level, COUNT(*) AS count FROM decision_log GROUP BY risk_level"
+        ).fetchall()
+        row = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN alert_status='OPEN' THEN 1 ELSE 0 END) AS open_alerts,
+                   SUM(CASE WHEN risk_level IN ('High','Critical') THEN 1 ELSE 0 END) AS high_risk
+            FROM decision_log
+        """).fetchone()
+        payload = {
+            "total_records":  int(row['total'] or 0),
+            "open_alerts":    int(row['open_alerts'] or 0),
+            "high_risk":      int(row['high_risk'] or 0),
+            "distribution":   [dict(item) for item in distribution]
+        }
+        return jsonify(_store_cached_response('summary', payload))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/work-orders/summary')
 @login_required
 def api_work_orders_summary():
-    """
-    Get Work Order KPI counts for the dashboard.
-    ---
-    responses:
-      200:
-        description: Work order counts by status
-    """
     try:
         conn = get_db()
         df = pd.read_sql("SELECT status, COUNT(*) c FROM work_orders GROUP BY status", conn)
         counts = dict(zip(df['status'], df['c']))
 
-        # 將 ACCEPTED 與 PENDING_VERIFICATION 一併計入進行中 / 未結案的 open_count
         open_count = (
             counts.get('OPEN', 0)
             + counts.get('ASSIGNED', 0)
@@ -1815,7 +2658,6 @@ def api_work_orders_summary():
             + counts.get('PENDING_VERIFICATION', 0)
         )
 
-        # 排除已結案 (CLOSED) 與已取消 (CANCELLED) 的逾期統計
         overdue = conn.execute(
             "SELECT COUNT(*) c FROM work_orders WHERE due_date < ? "
             "AND status NOT IN ('CLOSED', 'CANCELLED')",
@@ -1832,8 +2674,6 @@ def api_work_orders_summary():
 @app.route('/api/work-orders/my-summary')
 @login_required
 def api_my_work_orders_summary():
-    """KPI counts scoped to the current technician's own assigned work
-    orders, for the technician-specific dashboard card."""
     if current_user.is_admin:
         return jsonify({"error": "Only available to technicians"}), 403
 
@@ -1860,34 +2700,55 @@ def api_my_work_orders_summary():
 @app.route('/api/metrics')
 @login_required
 def api_metrics():
-    """
-    Get KPI metrics.
-    ---
-    responses:
-      200:
-        description: KPI metrics including resolution rate and risk stats
-    """
     try:
+        cached = _cached_response('metrics')
+        if cached is not None:
+            return jsonify(cached)
         conn = get_db()
-        df   = pd.read_sql("SELECT * FROM decision_log", conn)
-        total = len(df)
-        resolved = int((df['alert_status'] == 'RESOLVED').sum())
-        fp = int((df['alert_status'] == 'FALSE_POSITIVE').sum())
-        open_ = int((df['alert_status'] == 'OPEN').sum())
-        in_progress = int((df['alert_status'] == 'IN_PROGRESS').sum())
-        high = int(df['risk_level'].isin(['High', 'Critical']).sum())
+        row = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN alert_status='RESOLVED' THEN 1 ELSE 0 END) AS resolved,
+                   SUM(CASE WHEN alert_status='FALSE_POSITIVE' THEN 1 ELSE 0 END) AS false_positives,
+                   SUM(CASE WHEN alert_status='OPEN' THEN 1 ELSE 0 END) AS open_alerts,
+                   SUM(CASE WHEN alert_status='IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress,
+                   SUM(CASE WHEN risk_level IN ('High','Critical') THEN 1 ELSE 0 END) AS high_risk,
+                   AVG(risk_score) AS avg_risk_score,
+                   AVG(pred_prob) AS avg_pred_prob
+            FROM decision_log
+        """).fetchone()
+        distribution = conn.execute(
+            "SELECT risk_level, COUNT(*) AS count FROM decision_log GROUP BY risk_level"
+        ).fetchall()
+        trend_rows = conn.execute("""
+            SELECT record_id, risk_score, pred_prob
+            FROM decision_log
+            WHERE record_id % 10 = 0
+            ORDER BY record_id
+        """).fetchall()
+        total = int(row['total'] or 0)
+        resolved = int(row['resolved'] or 0)
+        fp = int(row['false_positives'] or 0)
+        open_ = int(row['open_alerts'] or 0)
+        in_progress = int(row['in_progress'] or 0)
         denom = resolved + open_ + in_progress
-        return jsonify({
+        payload = {
             "total_records": total,
             "open_alerts": open_,
             "in_progress": in_progress,
-            "high_risk_count": high,
+            "high_risk_count": int(row['high_risk'] or 0),
             "resolved_alerts": resolved,
             "false_positives": fp,
             "resolution_rate": f"{resolved / denom * 100:.1f}%" if denom > 0 else "0%",
-            "avg_risk_score": round(float(df['risk_score'].mean()), 1),
-            "avg_pred_prob": round(float(df['pred_prob'].mean()), 3)
-        })
+            "avg_risk_score": round(float(row['avg_risk_score'] or 0), 1),
+            "avg_pred_prob": round(float(row['avg_pred_prob'] or 0), 3),
+            "distribution": [dict(item) for item in distribution],
+            "trends": {
+                "record_ids": [item['record_id'] for item in trend_rows],
+                "risk_scores": [item['risk_score'] for item in trend_rows],
+                "pred_probs": [round(float(item['pred_prob']), 3) for item in trend_rows],
+            },
+        }
+        return jsonify(_store_cached_response('metrics', payload))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1895,15 +2756,6 @@ def api_metrics():
 @app.route('/api/alerts')
 @login_required
 def api_alerts():
-    """
-    Get High/Critical risk records for the High Risk Alerts preview.
-    Includes the simulated machine_id + asset_id for each record so the
-    dashboard can show and link the responsible machine directly.
-    ---
-    responses:
-      200:
-        description: High/Critical risk records, highest risk score first
-    """
     try:
         conn = get_db()
         df = pd.read_sql("""
@@ -1969,6 +2821,13 @@ def api_record(record_id):
         asset = conn.execute("SELECT * FROM assets WHERE machine_id=?", (machine_id,)).fetchone()
         result['machine_id'] = machine_id
         result['asset'] = dict(asset) if asset else None
+        result['linked_work_orders'] = [
+            dict(row) for row in conn.execute(
+                "SELECT wo_id, status, assigned_to, created_at FROM work_orders "
+                "WHERE record_id=? ORDER BY created_at DESC, wo_id DESC",
+                (record_id,)
+            ).fetchall()
+        ]
 
         return jsonify(result)
     except Exception as e:
@@ -1978,33 +2837,10 @@ def api_record(record_id):
 @app.route('/api/update_status/<int:record_id>', methods=['POST'])
 @login_required
 def update_status(record_id):
-    """
-    Update an alert's status. When status is RESOLVED or FALSE_POSITIVE,
-    an optional 'note' in the JSON body is stored as the resolution reason
-    (e.g. "False positive after inspection.") alongside who closed it and
-    when — shown as the Resolution Information card on record_detail.
-    ---
-    parameters:
-      - name: record_id
-        in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
-        schema:
-          properties:
-            status:
-              type: string
-            note:
-              type: string
-              description: Optional resolution note, only used for RESOLVED/FALSE_POSITIVE.
-    responses:
-      200:
-        description: Status updated
-    """
     try:
-        status  = request.json.get('status')
-        note    = (request.json.get('note') or '').strip()
+        data = request.get_json(silent=True) or {}
+        status  = data.get('status')
+        note    = (data.get('note') or '').strip()
         allowed = ['OK', 'OPEN', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'FALSE_POSITIVE']
         if status not in allowed:
             return jsonify({"error": f"Invalid status. Must be one of {allowed}"}), 400
@@ -2021,6 +2857,10 @@ def update_status(record_id):
             return jsonify({"error": "Forbidden: this alert is not assigned to you"}), 403
 
         old_status = old_row['alert_status']
+        if old_status in ('RESOLVED', 'FALSE_POSITIVE') and status != old_status:
+            return jsonify({"error": "Closed alerts must be reopened through the administrator Reopen Alert action"}), 400
+        if old_status == status:
+            return jsonify({"message": f"Record {record_id} is already {status}."})
 
         if status in ('RESOLVED', 'FALSE_POSITIVE'):
             resolved_at = datetime.utcnow().isoformat(timespec='seconds')
@@ -2036,6 +2876,7 @@ def update_status(record_id):
                 (status, record_id)
             )
         conn.commit()
+        _clear_response_cache()
         if status == 'RESOLVED':
             create_notification(
                 username=None,
@@ -2061,30 +2902,62 @@ def update_status(record_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/reopen_alert/<int:record_id>', methods=['POST'])
+@login_required
+def reopen_alert(record_id):
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip()
+    if not current_user.is_admin:
+        return jsonify({"error": "Forbidden: only an administrator can reopen an alert"}), 403
+    if not reason:
+        return jsonify({"error": "A reason is required to reopen an alert"}), 400
+
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT alert_status, assigned_to FROM decision_log WHERE record_id=?", (record_id,)
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return jsonify({"error": "Record not found"}), 404
+        if row['alert_status'] not in ('RESOLVED', 'FALSE_POSITIVE'):
+            conn.rollback()
+            return jsonify({"error": "Only a resolved or false-positive alert can be reopened"}), 400
+
+        old_status = row['alert_status']
+        new_status = 'ASSIGNED' if row['assigned_to'] else 'OPEN'
+        reopened_at = datetime.utcnow().isoformat(timespec='seconds')
+        conn.execute(
+            "UPDATE decision_log SET alert_status=?, resolved_by=NULL, resolved_at=NULL, resolution_note=NULL "
+            "WHERE record_id=?",
+            (new_status, record_id)
+        )
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
+            (reopened_at, current_user.username, 'REOPEN_ALERT', f'Record #{record_id}',
+             f'{old_status}->{new_status}; reason={reason}')
+        )
+        conn.commit()
+        _clear_response_cache()
+        return jsonify({"message": f"Record {record_id} reopened.", "alert_status": new_status})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/record/<int:record_id>/history')
 @login_required
 def api_record_history(record_id):
-    """
-    Get assignment/status history for a specific record, sourced from audit_log.
-    ---
-    parameters:
-      - name: record_id
-        in: path
-        type: integer
-        required: true
-    responses:
-      200:
-        description: List of audit log entries for this record
-    """
     try:
         conn = get_db()
         target = f'Record #{record_id}'
-        df = pd.read_sql(
-            "SELECT timestamp, username, action, details FROM audit_log "
-            "WHERE target=? ORDER BY timestamp ASC",
-            conn, params=[target]
-        )
-        return jsonify(df_to_records(df))
+        rows = conn.execute(
+            "SELECT id, timestamp, username, action, details FROM audit_log "
+            "WHERE target=? ORDER BY timestamp DESC, id DESC",
+            (target,)
+        ).fetchall()
+        return jsonify([dict(row) for row in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2092,40 +2965,33 @@ def api_record_history(record_id):
 @app.route('/api/trends')
 @login_required
 def api_trends():
-    """
-    Get risk score trend data for charting.
-    ---
-    responses:
-      200:
-        description: Trend data grouped by risk level
-    """
     try:
+        cached = _cached_response('trends')
+        if cached is not None:
+            return jsonify(cached)
         conn = get_db()
-        df   = pd.read_sql("SELECT record_id, risk_score, pred_prob, risk_level FROM decision_log ORDER BY record_id", conn)
-        sampled = df[df['record_id'] % 10 == 0]
-        return jsonify({
-            "record_ids":   sampled['record_id'].tolist(),
-            "risk_scores":  sampled['risk_score'].tolist(),
-            "pred_probs":   sampled['pred_prob'].round(3).tolist(),
-        })
+        rows = conn.execute("""
+            SELECT record_id, risk_score, pred_prob
+            FROM decision_log
+            WHERE record_id % 10 = 0
+            ORDER BY record_id
+        """).fetchall()
+        payload = {
+            "record_ids": [row['record_id'] for row in rows],
+            "risk_scores": [row['risk_score'] for row in rows],
+            "pred_probs": [round(float(row['pred_prob']), 3) for row in rows],
+        }
+        return jsonify(_store_cached_response('trends', payload))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-_stream_index = 0
-_stream_lock  = threading.Lock()
-
 
 @app.route('/api/model-comparison')
 @login_required
 def api_model_comparison():
-    """
-    Get LR vs RF performance metrics and prediction disagreement analysis.
-    ---
-    responses:
-      200:
-        description: Model comparison metrics and disagreement records
-    """
     try:
+        cached = _cached_response('model-comparison')
+        if cached is not None:
+            return jsonify(cached)
         metrics_df = pd.read_csv(MODEL_METRICS_CSV)
         metrics = metrics_df.to_dict(orient='records')
 
@@ -2177,7 +3043,7 @@ def api_model_comparison():
             .head(20)
         )
 
-        return jsonify({
+        payload = {
             "metrics": metrics,
             "total_records": total,
             "agreement_count": agree,
@@ -2200,23 +3066,14 @@ def api_model_comparison():
                 'actual_failure', 'risk_level', 'risk_score', 'action', 'shap_explanation',
                 'prob_gap_pct'
             ]].to_dict(orient='records')
-        })
+        }
+        return jsonify(_store_cached_response('model-comparison', payload))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/shap/global')
 @login_required
 def api_shap_global():
-    """
-    Get global SHAP feature importance (mean |SHAP value| per feature),
-    computed once at training time and cached to disk.
-    ---
-    responses:
-      200:
-        description: Feature importance ranking + model metadata
-      404:
-        description: SHAP importance file not found (model not yet trained)
-    """
     try:
         if not os.path.exists(SHAP_IMPORTANCE_JSON):
             return jsonify({"error": "SHAP importance data not available. Train the model first."}), 404
@@ -2231,15 +3088,6 @@ def api_shap_global():
 @app.route('/api/shap/highest-risk')
 @login_required
 def api_shap_highest_risk():
-    """
-    Get the full SHAP feature breakdown for the current highest-risk record.
-    ---
-    responses:
-      200:
-        description: Record info + all feature SHAP values, sorted by |impact|
-      404:
-        description: No records found
-    """
     try:
         conn = get_db()
 
@@ -2286,13 +3134,6 @@ def api_shap_highest_risk():
 @app.route('/api/explainability')
 @login_required
 def api_explainability():
-    """
-    Get ROC curve data + raw prob/actual arrays for LR and RF.
-    ---
-    responses:
-      200:
-        description: ROC points, AUC, and per-record probabilities for both models
-    """
     try:
         conn = get_db()
         df = pd.read_sql(
@@ -2331,13 +3172,6 @@ def api_explainability():
 @app.route('/api/health')
 @login_required
 def api_health():
-    """
-    Get system health status (API, DB, Model, System resources).
-    ---
-    responses:
-      200:
-        description: Health status of all subsystems
-    """
     start = time.perf_counter()
     db_health     = check_database_health()
     model_health  = check_model_health()
@@ -2394,13 +3228,6 @@ def api_health():
 @app.route('/api/health/history')
 @login_required
 def api_health_history():
-    """
-    Get recent health check history for timeline visualization.
-    ---
-    responses:
-      200:
-        description: Last 30 health check results
-    """
     try:
         conn = get_db()
         df = pd.read_sql(
@@ -2416,20 +3243,18 @@ def api_health_history():
 @app.route('/api/stream')
 @login_required
 def api_stream():
-    """
-    Get next record for streaming simulation.
-    ---
-    responses:
-      200:
-        description: Single record cycled row-by-row
-    """
-    global _stream_index
     try:
         conn = get_db()
-        total = pd.read_sql("SELECT COUNT(*) as c FROM decision_log", conn)['c'][0]
-        with _stream_lock:
-            idx = _stream_index % int(total)
-            _stream_index += 1
+        total_row = conn.execute("SELECT COUNT(*) AS c FROM decision_log").fetchone()
+        total = int(total_row['c'] if total_row else 0)
+        if total <= 0:
+            return jsonify({"error": "No data"}), 404
+
+        try:
+            cursor = int(request.args.get('cursor', 0))
+        except (TypeError, ValueError):
+            cursor = 0
+        idx = cursor % total
         df = pd.read_sql(
             "SELECT * FROM decision_log ORDER BY record_id LIMIT 1 OFFSET ?",
             conn, params=[idx]
@@ -2439,18 +3264,20 @@ def api_stream():
             return jsonify({"error": "No data"}), 404
         row['stream_index'] = idx
         row['total_records'] = int(total)
+        row['next_stream_index'] = (idx + 1) % int(total)
 
         if row.get('risk_level') in ('High', 'Critical'):
             notif_type = 'critical_alert' if row['risk_level'] == 'Critical' else 'risk_escalated'
-            if not _notification_exists_for_record(row['record_id'], notif_type):
-                create_notification(
-                    username=None,
-                    title=f"{row['risk_level']} Machine Alert",
-                    message=f"Record #{row['record_id']} risk score reached {row['risk_score']}.",
-                    level='critical' if row['risk_level'] == 'Critical' else 'warning',
-                    record_id=row['record_id'],
-                    notif_type=notif_type,
-                )
+            with _notification_write_lock:
+                if not _notification_exists_for_record(row['record_id'], notif_type):
+                    create_notification(
+                        username=None,
+                        title=f"{row['risk_level']} Machine Alert",
+                        message=f"Record #{row['record_id']} risk score reached {row['risk_score']}.",
+                        level='critical' if row['risk_level'] == 'Critical' else 'warning',
+                        record_id=row['record_id'],
+                        notif_type=notif_type,
+                    )
 
         return jsonify(row)
     except Exception as e:
@@ -2459,13 +3286,6 @@ def api_stream():
 @app.route('/api/export/csv')
 @login_required
 def export_csv():
-    """
-    Export High/Critical risk records as CSV.
-    ---
-    responses:
-      200:
-        description: CSV file download
-    """
     try:
         conn = get_db()
         df = pd.read_sql("""
@@ -2491,14 +3311,6 @@ def export_csv():
 @app.route('/api/notifications')
 @login_required
 def api_notifications():
-    """
-    Get the persistent notification list for the current user.
-    Admins also see broadcast notifications (username IS NULL).
-    ---
-    responses:
-      200:
-        description: Notifications newest-first, plus unread count
-    """
     try:
         conn = get_db()
         if current_user.is_admin:
@@ -2521,13 +3333,6 @@ def api_notifications():
 @app.route('/api/notifications/<int:notif_id>/read', methods=['POST'])
 @login_required
 def api_notification_read(notif_id):
-    """
-    Mark a single notification as read.
-    ---
-    responses:
-      200:
-        description: Marked as read
-    """
     try:
         conn = get_db()
         conn.execute(
@@ -2543,13 +3348,6 @@ def api_notification_read(notif_id):
 @app.route('/api/notifications/read-all', methods=['POST'])
 @login_required
 def api_notifications_read_all():
-    """
-    Mark every notification visible to the current user as read.
-    ---
-    responses:
-      200:
-        description: All marked as read
-    """
     try:
         conn = get_db()
         now = datetime.utcnow().isoformat(timespec='seconds')
@@ -2572,9 +3370,6 @@ def api_notifications_read_all():
 @app.route('/api/notifications/stream')
 @login_required
 def notifications_stream():
-    """
-    Server-Sent Events stream.
-    """
     username = current_user.username
 
     def gen():
@@ -2599,13 +3394,18 @@ def notifications_stream():
 
 
 # ══════════════════════════════════════════
-# PAGE ROUTES (protected: any logged-in user)
+# PAGE ROUTES
 # ══════════════════════════════════════════
 
 @app.route('/')
 @login_required
 def dashboard():
     return render_template('dashboard.html')
+
+@app.route('/factory')
+@login_required
+def factory_overview_page():
+    return render_template('factory_overview.html')
 
 @app.route('/alerts')
 @login_required
@@ -2672,6 +3472,16 @@ def assets_page():
 def asset_detail_page(asset_id):
     return render_template('asset_detail.html', asset_id=asset_id)
 
+@app.route('/machine/<machine_id>')
+@login_required
+def machine_detail_page(machine_id):
+    """Machine-facing alias used by the factory digital twin."""
+    conn = get_db()
+    asset = conn.execute("SELECT asset_id FROM assets WHERE machine_id=?", (machine_id,)).fetchone()
+    if asset is None:
+        return render_template('asset_detail.html', asset_id=machine_id), 404
+    return render_template('asset_detail.html', asset_id=asset['asset_id'])
+
 @app.route('/stream')
 @login_required
 def stream_page():
@@ -2691,9 +3501,13 @@ if __name__ == '__main__':
     init_resolution_columns()
     init_work_orders_table()
     init_workflow_columns()
+    init_pm_schedules_table()
+    init_maintenance_records_table()
+    init_downtime_events_table()
     init_notifications_table()
     init_production_lines_table()
     init_assets_table()
     seed_assets_and_lines()
+    seed_demo_maintenance_data()
     init_indexes()
     app.run(debug=False, threaded=True)
