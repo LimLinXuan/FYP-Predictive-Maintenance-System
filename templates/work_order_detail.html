@@ -36,6 +36,9 @@
     <div id="sourceAlertCard">
       <p class="text-gray-500 text-sm">No linked alert (manual work order).</p>
     </div>
+    <p id="alertReviewNotice" class="hidden mt-3 rounded-lg border border-amber-700 bg-amber-900/30 p-3 text-sm text-amber-300">
+      This work order is closed, but its linked alert is still open and requires review.
+    </p>
   </div>
 </div>
 
@@ -111,6 +114,7 @@ const statusBadgeStyle = {
 }
 
 let currentWO = null
+let activeTechnicians = []
 const STAGES = ['OPEN', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'PENDING_VERIFICATION', 'CLOSED']
 const STAGE_LABELS = {
   OPEN: 'Open', ASSIGNED: 'Assigned', ACCEPTED: 'Accepted',
@@ -148,12 +152,21 @@ function renderProgressTracker(status) {
 }
 
 async function load() {
-  const data = await fetch(`/api/work-orders/${WO_ID}`).then(r => r.json())
+  const data = await fetch(`/api/work-orders/${WO_ID}`, { cache: 'no-store' }).then(r => r.json())
   if (data.error) {
     document.querySelector('main').innerHTML = `<p class="text-red-400 text-center mt-20">${data.error}</p>`
     return
   }
   currentWO = data
+  if (CURRENT_USER.role === 'admin' && ['OPEN', 'ASSIGNED'].includes(data.status)) {
+    try {
+      const technicians = await fetch('/api/technicians', { cache: 'no-store' }).then(r => r.json())
+      activeTechnicians = Array.isArray(technicians) ? technicians : []
+    } catch (err) {
+      activeTechnicians = []
+      console.error('Failed to load technicians:', err)
+    }
+  }
 
   const badge = document.getElementById('statusBadge')
   badge.className = `text-sm font-bold px-4 py-2 rounded-full ${statusBadgeStyle[data.status] || 'bg-gray-800 text-gray-400'}`
@@ -185,6 +198,10 @@ async function load() {
       <p class="text-sm mt-2"><span class="text-gray-500">Risk:</span> <span class="font-semibold">${a.risk_level}</span> (${a.risk_score}/100)</p>
       <p class="text-xs text-gray-400 mt-2">${a.shap_explanation || ''}</p>
     `
+    const alertStillOpen = !['RESOLVED', 'FALSE_POSITIVE'].includes(a.alert_status)
+    document.getElementById('alertReviewNotice').classList.toggle(
+      'hidden', data.status !== 'CLOSED' || !alertStillOpen
+    )
   }
 
   renderNotes()
@@ -254,7 +271,22 @@ function renderActions() {
   const isMine = currentWO.assigned_to === CURRENT_USER.username
   let html = ''
 
-  if (!currentWO.assigned_to && !isAdmin) {
+  if (isAdmin && ['OPEN', 'ASSIGNED'].includes(s)) {
+    const options = activeTechnicians.map(username =>
+      `<option value="${username}" ${username === currentWO.assigned_to ? 'selected' : ''}>${username}</option>`
+    ).join('')
+    html += `<div class="flex items-center gap-2 w-full">
+      <label for="technicianSelect" class="text-gray-400 text-sm">${currentWO.assigned_to ? 'Reassign Technician' : 'Assign Technician'}</label>
+      <select id="technicianSelect" class="bg-gray-700 text-white text-sm rounded px-3 py-2">
+        <option value="">Select technician</option>${options}
+      </select>
+      <button onclick="assignTechnician()" class="bg-blue-700 hover:bg-blue-600 text-white text-sm px-3 py-2 rounded-lg">
+        Confirm Assignment
+      </button>
+    </div>`
+  }
+
+  if (!currentWO.assigned_to && !isAdmin && s === 'OPEN') {
     html += `<button onclick="claimWO()" class="bg-purple-700 hover:bg-purple-600 text-white text-sm px-3 py-2 rounded-lg">Claim</button>`
   }
 
@@ -277,25 +309,45 @@ function renderActions() {
   wrap.innerHTML = html || '<p class="text-gray-500 text-sm">No actions available.</p>'
 }
 
+async function assignTechnician() {
+  const select = document.getElementById('technicianSelect')
+  const technician = select?.value
+  if (!technician) { alert('Please select an active technician.'); return }
+  const action = currentWO.assigned_to ? 'Reassign' : 'Assign'
+  if (!confirm(`${action} this work order to ${technician}? The technician will still need to accept it.`)) return
+
+  const res = await fetch(`/api/work-orders/${WO_ID}/assign`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ technician })
+  })
+  const data = await res.json()
+  if (res.ok) {
+    showToast(`Work order assigned to ${data.assigned_to}`, 'info')
+    await load()
+  } else {
+    alert(data.error)
+  }
+}
+
 async function claimWO() {
   const res = await fetch(`/api/work-orders/${WO_ID}/assign`, {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ technician: CURRENT_USER.username })
   })
   const data = await res.json()
-  if (res.ok) { showToast('✅ Claimed', 'info'); load() } else { alert(data.error) }
+  if (res.ok) { showToast('✅ Claimed', 'info'); await load() } else { alert(data.error) }
 }
 
 async function acceptWO() {
   const res = await fetch(`/api/work-orders/${WO_ID}/accept`, { method: 'POST' })
   const data = await res.json()
-  if (res.ok) { showToast('✅ Accepted', 'info'); load() } else { alert(data.error) }
+  if (res.ok) { showToast('✅ Accepted', 'info'); await load() } else { alert(data.error) }
 }
 
 async function startWO() {
   const res = await fetch(`/api/work-orders/${WO_ID}/start`, { method: 'POST' })
   const data = await res.json()
-  if (res.ok) { showToast('▶ Work started', 'info'); load() } else { alert(data.error) }
+  if (res.ok) { showToast('▶ Work started', 'info'); await load() } else { alert(data.error) }
 }
 
 async function saveNotes() {
@@ -325,7 +377,7 @@ async function submitComplete() {
   if (res.ok) {
     closeCompleteModal()
     showToast('✅ Marked complete — pending verification', 'info')
-    load()
+    await load()
   } else { alert(data.error) }
 }
 
@@ -339,7 +391,7 @@ async function submitVerification(decision) {
   const data = await res.json()
   if (res.ok) {
     showToast(decision === 'approve' ? '✅ Approved & closed' : '↩ Sent back for rework', 'info')
-    load()
+    await load()
   } else { alert(data.error) }
 }
 
@@ -350,7 +402,7 @@ async function cancelWO() {
     body: JSON.stringify({ status: 'CANCELLED' })
   })
   const data = await res.json()
-  if (res.ok) { showToast('Work order cancelled', 'info'); load() } else { alert(data.error) }
+  if (res.ok) { showToast('Work order cancelled', 'info'); await load() } else { alert(data.error) }
 }
 
 load()

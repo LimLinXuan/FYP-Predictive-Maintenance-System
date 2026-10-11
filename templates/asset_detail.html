@@ -53,8 +53,52 @@
   </div>
 </div>
 
+<!-- PM Schedule & Downtime Events Cards -->
+<div class="grid grid-cols-2 gap-6 mt-6">
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-semibold text-gray-200">PM Schedule</h2>
+      <span class="text-gray-500 text-xs" id="pmMeta"></span>
+    </div>
+    <div id="pmContainer"><p class="text-gray-500 text-sm">Loading...</p></div>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-5">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-semibold text-gray-200">Downtime Events</h2>
+      <span class="text-gray-500 text-xs" id="downtimeMeta"></span>
+    </div>
+    <div id="downtimeContainer"><p class="text-gray-500 text-sm">Loading...</p></div>
+  </div>
+</div>
+
+<!-- Maintenance History Card -->
+<div class="bg-gray-800 rounded-xl p-5 mt-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-semibold text-gray-200">Maintenance History</h2>
+    <span class="text-gray-500 text-xs" id="maintMeta"></span>
+  </div>
+  <div id="maintContainer"><p class="text-gray-500 text-sm">Loading...</p></div>
+</div>
+
+<!-- Failure History Card -->
+<div class="bg-gray-800 rounded-xl p-5 mt-6">
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="font-semibold text-gray-200">Failure History</h2>
+    <span class="text-gray-500 text-xs" id="failureMeta"></span>
+  </div>
+  <div id="failureContainer"><p class="text-gray-500 text-sm">Loading...</p></div>
+</div>
+
 <script>
 const ASSET_ID = "{{ asset_id }}"
+
+function safeToast(msg, type) {
+  if (typeof showToast === 'function') {
+    showToast(msg, type)
+  } else {
+    console.log(`[toast:${type}]`, msg)
+  }
+}
 
 const CRITICALITY_COLOR = {
   HIGH:   'text-red-400',
@@ -93,11 +137,18 @@ const WO_PRIORITY_COLOR = {
   LOW:      'text-green-400'
 }
 const WO_STATUS_STYLE = {
-  OPEN:        'bg-red-900 border border-red-700 text-red-400',
-  ASSIGNED:    'bg-blue-900 border border-blue-700 text-blue-400',
-  IN_PROGRESS: 'bg-yellow-900 border border-yellow-700 text-yellow-400',
-  COMPLETED:   'bg-green-900 border border-green-700 text-green-400',
-  CANCELLED:   'bg-gray-700 border border-gray-600 text-gray-400'
+  OPEN:                 'bg-red-900 border border-red-700 text-red-400',
+  ASSIGNED:             'bg-blue-900 border border-blue-700 text-blue-400',
+  ACCEPTED:             'bg-indigo-900 border border-indigo-700 text-indigo-300',
+  IN_PROGRESS:          'bg-yellow-900 border border-yellow-700 text-yellow-400',
+  PENDING_VERIFICATION: 'bg-purple-900 border border-purple-700 text-purple-300',
+  CLOSED:               'bg-green-900 border border-green-700 text-green-400',
+  CANCELLED:            'bg-gray-700 border border-gray-600 text-gray-400'
+}
+const PM_STATUS_STYLE = {
+  ON_SCHEDULE: 'bg-green-900 border border-green-700 text-green-400',
+  DUE_SOON:    'bg-yellow-900 border border-yellow-700 text-yellow-400',
+  OVERDUE:     'bg-red-900 border border-red-700 text-red-400'
 }
 
 function fmtDueShort(dateStr) {
@@ -130,7 +181,7 @@ async function loadWorkOrders() {
   const container = document.getElementById('workOrdersContainer')
   const meta = document.getElementById('woMeta')
   try {
-    const data = await fetch(`/api/assets/${ASSET_ID}/work-orders`).then(r => r.json())
+    const data = await fetch(`/api/assets/${ASSET_ID}/work-orders`, { cache: 'no-store' }).then(r => r.json())
     if (data.error) {
       container.innerHTML = `<p class="text-gray-500 text-sm">${data.error}</p>`
       return
@@ -201,7 +252,7 @@ async function loadObservations() {
   const container = document.getElementById('observationsContainer')
   const meta = document.getElementById('observationsMeta')
   try {
-    const data = await fetch(`/api/assets/${ASSET_ID}/observations?limit=20`).then(r => r.json())
+    const data = await fetch(`/api/assets/${ASSET_ID}/observations?limit=20`, { cache: 'no-store' }).then(r => r.json())
     if (data.error) {
       container.innerHTML = `<p class="text-gray-500 text-sm">${data.error}</p>`
       return
@@ -238,9 +289,129 @@ async function loadObservations() {
   }
 }
 
+function pmRow(pm) {
+  const sc = PM_STATUS_STYLE[pm.status] || 'bg-gray-700 border border-gray-600 text-gray-400'
+  const freq = pm.frequency_type === 'DAYS' ? `every ${pm.frequency_value} days` : `every ${pm.frequency_value} tool-wear`
+  const detail = pm.status === 'OVERDUE'
+    ? (pm.status_detail.days_overdue !== undefined ? `${pm.status_detail.days_overdue}d overdue` : `${pm.status_detail.wear_over} wear over`)
+    : (pm.status_detail.days_remaining !== undefined ? `${pm.status_detail.days_remaining}d left` : pm.status_detail.wear_remaining !== undefined ? `${pm.status_detail.wear_remaining} wear left` : '')
+  return `
+    <div class="flex items-center justify-between border-b border-gray-700 last:border-0 py-2.5">
+      <div>
+        <p class="text-gray-200 text-sm font-medium">${pm.pm_name}</p>
+        <p class="text-gray-500 text-xs">${freq} · ${detail}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-bold px-2 py-1 rounded-full ${sc}">${pm.status.replace('_',' ')}</span>
+        <button onclick="completePM(${pm.pm_id})" class="text-xs bg-blue-700 hover:bg-blue-600 text-white px-2 py-1 rounded">Mark Done</button>
+      </div>
+    </div>`
+}
+
+async function loadPM() {
+  const container = document.getElementById('pmContainer')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/pm-schedules`, { cache: 'no-store' }).then(r => r.json())
+    if (data.error || !data.length) { container.innerHTML = `<p class="text-gray-500 text-sm">No PM schedules set up.</p>`; return }
+    document.getElementById('pmMeta').textContent = `${data.length} scheduled`
+    container.innerHTML = data.map(pmRow).join('')
+  } catch (err) {
+    console.error('Failed to load PM schedules:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load PM schedules.</p>`
+  }
+}
+
+async function completePM(pmId) {
+  const note = prompt('Note (optional):') || ''
+  const res = await fetch(`/api/pm-schedules/${pmId}/complete`, {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ note })
+  })
+  let data = {}
+  try { data = await res.json() } catch (e) {}
+  if (res.ok) { safeToast('✅ PM marked complete', 'info'); loadPM(); loadMaintenance(); load() }
+  else { alert(data.error || `Request failed (${res.status})`) }
+}
+
+function downtimeRow(d) {
+  const open = !d.end_time
+  return `
+    <div class="flex items-center justify-between border-b border-gray-700 last:border-0 py-2.5">
+      <div>
+        <p class="text-gray-200 text-sm font-medium">${d.reason_category.replace('_',' ')}</p>
+        <p class="text-gray-500 text-xs">${new Date(d.start_time).toLocaleString()} ${open ? '(ongoing)' : '→ ' + d.duration_minutes + ' min'}</p>
+      </div>
+      ${open ? `<button onclick="endDowntime(${d.downtime_id})" class="text-xs bg-green-700 hover:bg-green-600 text-white px-2 py-1 rounded">End</button>`
+             : `<span class="text-xs text-gray-500">Closed</span>`}
+    </div>`
+}
+
+async function loadDowntime() {
+  const container = document.getElementById('downtimeContainer')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/downtime`, { cache: 'no-store' }).then(r => r.json())
+    if (data.error || !data.length) { container.innerHTML = `<p class="text-gray-500 text-sm">No downtime recorded.</p>`; return }
+    document.getElementById('downtimeMeta').textContent = `${data.length} events`
+    container.innerHTML = data.map(downtimeRow).join('')
+  } catch (err) {
+    console.error('Failed to load downtime events:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load downtime events.</p>`
+  }
+}
+
+async function endDowntime(id) {
+  const res = await fetch(`/api/downtime/${id}/end`, { method: 'POST' })
+  const data = await res.json()
+  if (res.ok) { safeToast(`✅ Downtime closed (${data.duration_minutes} min)`, 'info'); loadDowntime(); load() } else { alert(data.error) }
+}
+
+function maintRow(m) {
+  return `
+    <div class="flex items-center justify-between border-b border-gray-700 last:border-0 py-2.5">
+      <div>
+        <p class="text-gray-200 text-sm">${m.description}</p>
+        <p class="text-gray-500 text-xs">${m.maintenance_type} · ${m.performed_by} · ${new Date(m.performed_at).toLocaleString()}</p>
+      </div>
+    </div>`
+}
+
+async function loadMaintenance() {
+  const container = document.getElementById('maintContainer')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/maintenance-records`, { cache: 'no-store' }).then(r => r.json())
+    if (data.error || !data.length) { container.innerHTML = `<p class="text-gray-500 text-sm">No maintenance history yet.</p>`; return }
+    document.getElementById('maintMeta').textContent = `${data.length} records`
+    container.innerHTML = data.map(maintRow).join('')
+  } catch (err) {
+    console.error('Failed to load maintenance records:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load maintenance records.</p>`
+  }
+}
+
+function failureRow(f) {
+  return `
+    <div class="flex items-center justify-between border-b border-gray-700 last:border-0 py-2.5">
+      <a href="/record/${f.record_id}" class="text-blue-400 hover:text-blue-300 hover:underline font-mono text-sm">#${f.record_id}</a>
+      <span class="text-gray-400 text-xs">${f.timestamp ?? '—'}</span>
+      <span class="text-gray-200 text-xs">${f.action ?? '—'}</span>
+    </div>`
+}
+
+async function loadFailures() {
+  const container = document.getElementById('failureContainer')
+  try {
+    const data = await fetch(`/api/assets/${ASSET_ID}/failure-history`, { cache: 'no-store' }).then(r => r.json())
+    if (data.error || !data.failures.length) { container.innerHTML = `<p class="text-gray-500 text-sm">No failures recorded.</p>`; return }
+    document.getElementById('failureMeta').textContent = `${data.count} total`
+    container.innerHTML = data.failures.map(failureRow).join('')
+  } catch (err) {
+    console.error('Failed to load failure history:', err)
+    container.innerHTML = `<p class="text-red-400 text-sm">Failed to load failure history.</p>`
+  }
+}
+
 async function load() {
   try {
-    const data = await fetch(`/api/assets/${ASSET_ID}`).then(r => r.json())
+    const data = await fetch(`/api/assets/${ASSET_ID}`, { cache: 'no-store' }).then(r => r.json())
     if (data.error) {
       document.querySelector('main').innerHTML =
         `<p class="text-red-400 text-center mt-20 text-lg">Asset ${ASSET_ID} not found.</p>`
@@ -266,6 +437,14 @@ async function load() {
       `<div>
         <p class="text-gray-500 text-xs mb-1">Criticality</p>
         <p class="font-semibold ${critCls}">${data.criticality || '—'}</p>
+      </div>`,
+      `<div>
+        <p class="text-gray-500 text-xs mb-1">Current Risk</p>
+        <p class="font-semibold ${RISK_LEVEL_COLOR[data.risk_level] || 'text-gray-400'}">${data.risk_level ? data.risk_level + (data.risk_score == null ? '' : ` · ${data.risk_score}`) : 'Not available'}</p>
+      </div>`,
+      `<div>
+        <p class="text-gray-500 text-xs mb-1">Maintenance Status</p>
+        <p class="font-semibold text-blue-300">${data.maintenance_status || 'ON_SCHEDULE'}</p>
       </div>`
     ].join('')
 
@@ -294,5 +473,9 @@ async function load() {
 load()
 loadObservations()
 loadWorkOrders()
+loadPM()
+loadDowntime()
+loadMaintenance()
+loadFailures()
 </script>
 {% endblock %}

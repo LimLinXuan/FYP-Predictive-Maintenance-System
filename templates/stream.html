@@ -101,7 +101,9 @@ const levelColor = {
 }
 
 let running   = true
-let intervalId = null
+let requestInFlight = false
+let streamCursor = 0
+let pollTimer = null
 let chart     = null
 const history  = { ids: [], scores: [], probs: [] }
 const MAX_HIST = 20
@@ -168,9 +170,33 @@ function flashCard(id) {
 }
 
 async function fetchNext() {
-  const res  = await fetch('/api/stream')
-  const data = await res.json()
+  if (!running || requestInFlight) return
+  requestInFlight = true
+  try {
+    await fetchNextRecord()
+  } catch (err) {
+    console.error('Stream update failed:', err)
+  } finally {
+    requestInFlight = false
+    if (running) scheduleNext()
+  }
+}
+
+async function fetchNextRecord() {
+  const res  = await fetch(`/api/stream?cursor=${streamCursor}`, { cache: 'no-store' }).catch(err => {
+    console.error('Stream request failed:', err)
+    return null
+  })
+  if (!res) return
+  const data = await res.json().catch(err => {
+    console.error('Stream response failed:', err)
+    return null
+  })
+  if (!data) return
   if (data.error) return
+  streamCursor = Number.isInteger(data.next_stream_index)
+    ? data.next_stream_index
+    : (data.stream_index + 1) % data.total_records
 
   // Progress
   const pct = ((data.stream_index + 1) / data.total_records * 100).toFixed(1)
@@ -220,6 +246,11 @@ async function fetchNext() {
   updateChart(data.record_id, data.risk_score, data.pred_prob)
 }
 
+function scheduleNext() {
+  clearTimeout(pollTimer)
+  if (running) pollTimer = setTimeout(fetchNext, 3000)
+}
+
 function toggleStream() {
   running = !running
   const dot   = document.getElementById('statusDot')
@@ -227,13 +258,13 @@ function toggleStream() {
   const btn   = document.getElementById('toggleBtn')
 
   if (running) {
-    intervalId = setInterval(fetchNext, 3000)
+    scheduleNext()
     dot.className   = 'w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse inline-block'
     label.className = 'text-green-400 text-sm font-medium'
     label.textContent = 'LIVE'
     btn.textContent = 'Pause'
   } else {
-    clearInterval(intervalId)
+    clearTimeout(pollTimer)
     dot.className   = 'w-2.5 h-2.5 rounded-full bg-gray-500 inline-block'
     label.className = 'text-gray-400 text-sm font-medium'
     label.textContent = 'PAUSED'
@@ -244,6 +275,5 @@ function toggleStream() {
 // Init
 initChart()
 fetchNext()
-intervalId = setInterval(fetchNext, 3000)
 </script>
 {% endblock %}
