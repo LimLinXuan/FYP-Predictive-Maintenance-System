@@ -1786,7 +1786,7 @@ def api_complete_work_order(wo_id):
 @app.route('/api/work-orders/<int:wo_id>/verify', methods=['POST'])
 @login_required
 def api_verify_work_order(wo_id):
-    """Admin or the WO's original creator reviews the completed work."""
+    """Admin reviews the completed work and approves or rejects it."""
     data = request.get_json(silent=True) or {}
     decision = data.get('decision')
     verification_note = (data.get('verification_note') or '').strip()
@@ -1800,9 +1800,9 @@ def api_verify_work_order(wo_id):
         if wo is None:
             conn.rollback()
             return jsonify({"error": "Work order not found"}), 404
-        if not (current_user.is_admin or wo['created_by'] == current_user.username):
+        if not current_user.is_admin:
             conn.rollback()
-            return jsonify({"error": "Forbidden: only an admin or the work order's creator can verify"}), 403
+            return jsonify({"error": "Forbidden: only an administrator can verify"}), 403
         if wo['status'] != 'PENDING_VERIFICATION':
             conn.rollback()
             return jsonify({"error": f"Cannot verify from status {wo['status']}"}), 400
