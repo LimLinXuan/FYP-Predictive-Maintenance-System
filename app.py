@@ -2711,6 +2711,7 @@ def api_metrics():
                    SUM(CASE WHEN alert_status='FALSE_POSITIVE' THEN 1 ELSE 0 END) AS false_positives,
                    SUM(CASE WHEN alert_status='OPEN' THEN 1 ELSE 0 END) AS open_alerts,
                    SUM(CASE WHEN alert_status='IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress,
+                   SUM(CASE WHEN alert_status='ASSIGNED' THEN 1 ELSE 0 END) AS assigned,
                    SUM(CASE WHEN risk_level IN ('High','Critical') THEN 1 ELSE 0 END) AS high_risk,
                    AVG(risk_score) AS avg_risk_score,
                    AVG(pred_prob) AS avg_pred_prob
@@ -2730,7 +2731,8 @@ def api_metrics():
         fp = int(row['false_positives'] or 0)
         open_ = int(row['open_alerts'] or 0)
         in_progress = int(row['in_progress'] or 0)
-        denom = resolved + open_ + in_progress
+        assigned = int(row['assigned'] or 0)
+        denom = resolved + open_ + assigned + in_progress
         payload = {
             "total_records": total,
             "open_alerts": open_,
@@ -2742,6 +2744,7 @@ def api_metrics():
             "avg_risk_score": round(float(row['avg_risk_score'] or 0), 1),
             "avg_pred_prob": round(float(row['avg_pred_prob'] or 0), 3),
             "distribution": [dict(item) for item in distribution],
+            "assigned": assigned,
             "trends": {
                 "record_ids": [item['record_id'] for item in trend_rows],
                 "risk_scores": [item['risk_score'] for item in trend_rows],

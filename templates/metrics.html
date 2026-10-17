@@ -129,9 +129,9 @@ async function load() {
   document.getElementById('m_score').textContent    = m.avg_risk_score
 
   // 1. Alert Status bar chart — CURRENT snapshot
-  const statusLabels = ['Open', 'In Progress', 'Resolved', 'False Positive']
-  const statusValues = [m.open_alerts, m.in_progress, m.resolved_alerts, m.false_positives]
-  const statusColors = ['#ef4444', '#eab308', '#22c55e', '#6b7280']
+  const statusLabels = ['Open', 'Assigned', 'In Progress', 'Resolved', 'False Positive']
+  const statusValues = [m.open_alerts, m.assigned, m.in_progress, m.resolved_alerts, m.false_positives]
+  const statusColors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#6b7280']
 
   new Chart(document.getElementById('statusChart'), {
     type: 'bar',
@@ -218,9 +218,9 @@ async function load() {
   })
 
   // 4. Alert Resolution Workflow — Cumulative lifecycle funnel
-  const totalAlerts    = m.open_alerts + m.in_progress + m.resolved_alerts + m.false_positives
-  const acknowledged   = m.in_progress + m.resolved_alerts
-  const inProgressPlus = m.in_progress + m.resolved_alerts
+  const totalAlerts    = m.open_alerts + m.assigned + m.in_progress + m.resolved_alerts + m.false_positives
+const acknowledged   = m.assigned + m.in_progress + m.resolved_alerts
+const inProgressPlus = m.in_progress + m.resolved_alerts
   const resolvedCount  = m.resolved_alerts
   const falsePositive  = m.false_positives
 
