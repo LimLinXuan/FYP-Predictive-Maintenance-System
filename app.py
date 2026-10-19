@@ -6,13 +6,13 @@ from flasgger import Swagger
 from flask import Response
 import csv
 import io
-import os
+import os, secrets
 import psutil
 import time
 import queue
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 from sklearn.metrics import roc_curve, roc_auc_score
 from flask_bcrypt import Bcrypt
@@ -21,7 +21,7 @@ from flask_login import (
     login_required, current_user
 )
 
-APP_START_TIME = datetime.utcnow()
+APP_START_TIME = datetime.now(timezone.utc).replace(tzinfo=None)
 MODEL_VERSION = "Random Forest + Logistic Regression"
 
 # ══════════════════════════════════════════
@@ -60,7 +60,7 @@ PRIORITY_DUE_HOURS = {
 
 def compute_due_date(priority):
     hours = PRIORITY_DUE_HOURS.get(priority, 72)
-    return (datetime.utcnow() + timedelta(hours=hours)).isoformat(timespec='seconds')
+    return (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours)).isoformat(timespec='seconds')
 
 # ══════════════════════════════════════════
 # PM & ASSET STATUS HELPERS
@@ -91,7 +91,7 @@ def compute_pm_status(pm):
     if pm['frequency_type'] == 'DAYS':
         if not pm['next_due_at']:
             return 'ON_SCHEDULE', {}
-        due, now = datetime.fromisoformat(pm['next_due_at']), datetime.utcnow()
+        due, now = datetime.fromisoformat(pm['next_due_at']), datetime.now(timezone.utc).replace(tzinfo=None)
         if now >= due:
             return 'OVERDUE', {"days_overdue": (now - due).days}
         elif (due - now).days <= PM_DUE_SOON_DAYS:
@@ -153,7 +153,7 @@ SHAP_IMPORTANCE_JSON = os.path.join(os.path.dirname(DB), "shap_importance.json")
 app.config['SWAGGER'] = {'title': 'Predictive Maintenance API', 'uiversion': 3}
 Swagger(app)
 
-app.config['SECRET_KEY'] = 'change-this-to-a-long-random-secret-key'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 
 bcrypt = Bcrypt(app)
 
@@ -260,7 +260,7 @@ def _push_to_subscribers(username, payload):
 
 def create_notification(username, title, message, level='info', record_id=None, notif_type='system'):
     conn = get_raw_conn()
-    created_at = datetime.utcnow().isoformat(timespec='seconds')
+    created_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
     cur = conn.execute(
         "INSERT INTO notifications (username, title, message, level, type, record_id, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -411,7 +411,7 @@ def _kpis_for_machines(conn, machine_ids, days=30):
             'mttr_minutes': None, 'failure_count': 0, 'downtime_minutes': 0,
         }
     placeholders = ','.join('?' for _ in machine_ids)
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat(timespec='seconds')
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat(timespec='seconds')
     downtime_minutes = 0
     failure_downtime_minutes = 0
     failure_count = 0
@@ -425,7 +425,7 @@ def _kpis_for_machines(conn, machine_ids, days=30):
             duration = row['duration_minutes']
             if duration is None and row['start_time']:
                 try:
-                    end = datetime.fromisoformat(row['end_time']) if row['end_time'] else datetime.utcnow()
+                    end = datetime.fromisoformat(row['end_time']) if row['end_time'] else datetime.now(timezone.utc).replace(tzinfo=None)
                     duration = max(0, int((end - datetime.fromisoformat(row['start_time'])).total_seconds() // 60))
                 except (TypeError, ValueError):
                     duration = 0
@@ -451,7 +451,7 @@ def _kpis_for_machines(conn, machine_ids, days=30):
 def _failure_trend(conn, machine_ids, days=14):
     """Return a filled daily failure series for the dashboard chart."""
     machine_ids = list(machine_ids)
-    start = datetime.utcnow() - timedelta(days=days - 1)
+    start = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days - 1)
     counts = {}
     if machine_ids:
         placeholders = ','.join('?' for _ in machine_ids)
@@ -617,7 +617,7 @@ def seed_demo_maintenance_data():
         conn.close()
         return
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # machine_index -> {
     #   "pms": [(name, freq_type, freq_value, offset), ...],
@@ -967,7 +967,7 @@ def log_health_check(overall_status, api_latency_ms, db_latency_ms):
     conn = get_db()
     conn.execute(
         "INSERT INTO health_log (timestamp, overall_status, api_latency_ms, db_latency_ms) VALUES (?, ?, ?, ?)",
-        (datetime.utcnow().isoformat(timespec='seconds'), overall_status, api_latency_ms, db_latency_ms)
+        (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), overall_status, api_latency_ms, db_latency_ms)
     )
     conn.execute("""
         DELETE FROM health_log WHERE id NOT IN (
@@ -1001,7 +1001,7 @@ def get_last_incident():
     }
 
 def get_uptime_string():
-    delta = datetime.utcnow() - APP_START_TIME
+    delta = datetime.now(timezone.utc).replace(tzinfo=None) - APP_START_TIME
     days = delta.days
     hours, rem = divmod(delta.seconds, 3600)
     minutes, _ = divmod(rem, 60)
@@ -1035,7 +1035,7 @@ def log_action(username, action, target='-', details='-'):
     conn = get_db()
     conn.execute(
         "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
-        (datetime.utcnow().isoformat(timespec='seconds'), username, action, target, details)
+        (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), username, action, target, details)
     )
     conn.commit()
 
@@ -1139,7 +1139,8 @@ def login():
 
         conn = get_db()
         conn.execute("UPDATE users SET last_login=? WHERE id=?",
-                      (datetime.utcnow().isoformat(), user.id))
+                     (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), user.id))
+
         conn.commit()
         log_action(user.username, 'LOGIN', '-', 'Success')
 
@@ -1195,7 +1196,7 @@ def create_user():
     conn.execute(
         "INSERT INTO users (username, email, password_hash, role, is_active, must_change_password, created_at) "
         "VALUES (?, ?, ?, ?, 1, 1, ?)",
-        (username, email, pw_hash, role, datetime.utcnow().isoformat())
+        (username, email, pw_hash, role, datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
     )
     conn.commit()
     log_action(current_user.username, 'CREATE_USER', username, f'role={role}')
@@ -1586,7 +1587,7 @@ def api_create_work_order_from_alert(record_id):
             record_id, machine_id, asset_id, title, alert['reasons'],
             alert['action'], alert['risk_level'], alert['risk_score'], priority,
             initial_status, assigned_to, current_user.username,
-            datetime.utcnow().isoformat(timespec='seconds'), due_date
+            datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), due_date
         ))
         conn.commit()
         wo_id = cur.lastrowid
@@ -1637,7 +1638,7 @@ def api_create_work_order_manual():
             data.get('machine_id'), data.get('asset_id'), title,
             data.get('description'), data.get('recommended_action'),
             priority, initial_status, assigned_to,
-            current_user.username, datetime.utcnow().isoformat(timespec='seconds'),
+            current_user.username, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'),
             due_date
         ))
         conn.commit()
@@ -1694,7 +1695,7 @@ def api_accept_work_order(wo_id):
 
     conn.execute(
         "UPDATE work_orders SET status='ACCEPTED', accepted_at=? WHERE wo_id=?",
-        (datetime.utcnow().isoformat(timespec='seconds'), wo_id)
+        (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), wo_id)
     )
     conn.commit()
     refresh_asset_status(wo['machine_id'])
@@ -1717,7 +1718,7 @@ def api_start_work_order(wo_id):
 
     conn.execute(
         "UPDATE work_orders SET status='IN_PROGRESS', started_at=? WHERE wo_id=?",
-        (datetime.utcnow().isoformat(timespec='seconds'), wo_id)
+        (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), wo_id)
     )
     conn.commit()
     refresh_asset_status(wo['machine_id'])
@@ -1765,7 +1766,7 @@ def api_complete_work_order(wo_id):
     if wo['status'] not in ('ACCEPTED', 'IN_PROGRESS'):
         return jsonify({"error": f"Cannot complete from status {wo['status']}"}), 400
 
-    completed_at = datetime.utcnow().isoformat(timespec='seconds')
+    completed_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
     conn.execute(
         "UPDATE work_orders SET status='PENDING_VERIFICATION', completed_at=?, resolution_note=? "
         "WHERE wo_id=?",
@@ -1807,7 +1808,7 @@ def api_verify_work_order(wo_id):
             conn.rollback()
             return jsonify({"error": f"Cannot verify from status {wo['status']}"}), 400
 
-        verified_at = datetime.utcnow().isoformat(timespec='seconds')
+        verified_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
         new_status = 'CLOSED' if decision == 'approve' else 'IN_PROGRESS'
         conn.execute(
             "UPDATE work_orders SET status=?, verified_by=?, verified_at=?, verification_note=? WHERE wo_id=?",
@@ -1992,7 +1993,7 @@ def api_create_pm_schedule():
     asset = conn.execute("SELECT machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
     if asset is None:
         return jsonify({"error": "Asset not found"}), 404
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     next_due_at = (now + timedelta(days=frequency_value)).isoformat(timespec='seconds') if frequency_type == 'DAYS' else None
     current_wear = get_latest_tool_wear(asset['machine_id']) if frequency_type == 'TOOL_WEAR' else None
     cur = conn.execute("""
@@ -2027,7 +2028,7 @@ def api_complete_pm_schedule(pm_id):
     pm = conn.execute("SELECT * FROM pm_schedules WHERE pm_id=?", (pm_id,)).fetchone()
     if pm is None:
         return jsonify({"error": "PM schedule not found"}), 404
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     current_wear = get_latest_tool_wear(pm['machine_id']) if pm['frequency_type'] == 'TOOL_WEAR' else None
     next_due_at = compute_next_pm_due(pm, now)
     conn.execute("""
@@ -2113,7 +2114,7 @@ def api_create_maintenance_record():
     asset = conn.execute("SELECT machine_id FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
     if asset is None:
         return jsonify({"error": "Asset not found"}), 404
-    now = datetime.utcnow().isoformat(timespec='seconds')
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
     cur = conn.execute("""
         INSERT INTO maintenance_records
             (asset_id, machine_id, maintenance_type, description, performed_by, performed_at, downtime_minutes, created_at)
@@ -2181,7 +2182,7 @@ def api_start_downtime():
     if existing_open:
         return jsonify({"error": "This asset already has an open downtime event",
                          "downtime_id": existing_open['downtime_id']}), 400
-    now = datetime.utcnow().isoformat(timespec='seconds')
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
     cur = conn.execute("""
         INSERT INTO downtime_events
             (asset_id, machine_id, start_time, reason_category, reason_detail, linked_wo_id, reported_by, created_at)
@@ -2220,7 +2221,7 @@ def api_end_downtime(downtime_id):
         return jsonify({"error": "Downtime event not found"}), 404
     if dt['end_time'] is not None:
         return jsonify({"error": "This downtime event is already closed"}), 400
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     duration_minutes = int((now - datetime.fromisoformat(dt['start_time'])).total_seconds() // 60)
     conn.execute(
         "UPDATE downtime_events SET end_time=?, duration_minutes=? WHERE downtime_id=?",
@@ -2322,7 +2323,7 @@ def assign_alert(record_id):
                 )
                 conn.execute(
                     "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
-                    (datetime.utcnow().isoformat(timespec='seconds'), current_user.username,
+                    (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), current_user.username,
                      'UPDATE_ALERT', f'Record #{record_id}', f"{row['alert_status']}->{new_status}")
                 )
                 conn.commit()
@@ -2340,7 +2341,7 @@ def assign_alert(record_id):
         details = f'previous_assignee={previous_assignee or "(unassigned)"}; new_assignee={new_assignee}'
         conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, target, details) VALUES (?, ?, ?, ?, ?)",
-            (datetime.utcnow().isoformat(timespec='seconds'), current_user.username,
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), current_user.username,
              'ASSIGN_ALERT', f'Record #{record_id}', details)
         )
         conn.commit()
@@ -2661,7 +2662,7 @@ def api_work_orders_summary():
         overdue = conn.execute(
             "SELECT COUNT(*) c FROM work_orders WHERE due_date < ? "
             "AND status NOT IN ('CLOSED', 'CANCELLED')",
-            (datetime.utcnow().isoformat(timespec='seconds'),)
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'),)
         ).fetchone()['c']
 
         return jsonify({
@@ -2689,7 +2690,7 @@ def api_my_work_orders_summary():
     overdue = conn.execute(
         "SELECT COUNT(*) c FROM work_orders WHERE assigned_to=? AND due_date < ? "
         "AND status NOT IN ('CLOSED','CANCELLED')",
-        (current_user.username, datetime.utcnow().isoformat(timespec='seconds'))
+        (current_user.username, ().isoformat(timespec='seconds'))
     ).fetchone()['c']
     return jsonify({
         "my_pending": pending,
@@ -2863,7 +2864,7 @@ def update_status(record_id):
             return jsonify({"message": f"Record {record_id} is already {status}."})
 
         if status in ('RESOLVED', 'FALSE_POSITIVE'):
-            resolved_at = datetime.utcnow().isoformat(timespec='seconds')
+            resolved_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
             conn.execute(
                 "UPDATE decision_log SET alert_status=?, resolved_by=?, resolved_at=?, resolution_note=? "
                 "WHERE record_id=?",
@@ -2927,7 +2928,7 @@ def reopen_alert(record_id):
 
         old_status = row['alert_status']
         new_status = 'ASSIGNED' if row['assigned_to'] else 'OPEN'
-        reopened_at = datetime.utcnow().isoformat(timespec='seconds')
+        reopened_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
         conn.execute(
             "UPDATE decision_log SET alert_status=?, resolved_by=NULL, resolved_at=NULL, resolution_note=NULL "
             "WHERE record_id=?",
@@ -3204,7 +3205,7 @@ def api_health():
     return jsonify({
         "overall_status": overall,
         "health_score": health_score,
-        "checked_at": datetime.utcnow().isoformat(timespec='seconds'),
+        "checked_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'),
         "uptime": get_uptime_string(),
         "model_version": MODEL_VERSION,
         "api": {"status": "healthy", "latency_ms": api_latency_ms},
@@ -3337,7 +3338,7 @@ def api_notification_read(notif_id):
         conn = get_db()
         conn.execute(
             "UPDATE notifications SET read_at=? WHERE id=? AND (username=? OR username IS NULL)",
-            (datetime.utcnow().isoformat(timespec='seconds'), notif_id, current_user.username)
+            (datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'), notif_id, current_user.username)
         )
         conn.commit()
         return jsonify({"message": "Marked as read"})
@@ -3350,7 +3351,7 @@ def api_notification_read(notif_id):
 def api_notifications_read_all():
     try:
         conn = get_db()
-        now = datetime.utcnow().isoformat(timespec='seconds')
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')
         if current_user.is_admin:
             conn.execute(
                 "UPDATE notifications SET read_at=? WHERE read_at IS NULL AND (username=? OR username IS NULL)",

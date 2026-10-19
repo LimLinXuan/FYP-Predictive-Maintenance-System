@@ -141,13 +141,26 @@ async function loadHealth() {
     const h = await fetch('/api/health').then(r => r.json())
 
     const b = bannerStyle[h.overall_status] || bannerStyle.down
+    const checkedAt = new Date(
+    h.checked_at.endsWith('Z') ? h.checked_at : `${h.checked_at}Z`
+);
     const banner = document.getElementById('overallBanner')
     banner.className = `rounded-xl p-5 mb-8 border grid grid-cols-4 items-center gap-4 ${b.border} ${b.bg}`
     document.getElementById('overallLabel').className = `text-sm uppercase tracking-wide ${b.label}`
     document.getElementById('overallLabel').textContent = 'Overall Status'
     document.getElementById('overallStatus').className = `text-3xl font-bold mt-1 ${b.text}`
     document.getElementById('overallStatus').textContent = h.overall_status.toUpperCase()
-    document.getElementById('checkedAt').textContent = `Last checked: ${h.checked_at} UTC`
+    document.getElementById('checkedAt').textContent =
+    `Last checked: ${checkedAt.toLocaleString('en-MY', {
+        timeZone: 'Asia/Kuala_Lumpur',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+    })} MYT`;
     document.getElementById('healthScore').textContent = h.health_score + ' / 100'
     document.getElementById('uptime').textContent = h.uptime
 

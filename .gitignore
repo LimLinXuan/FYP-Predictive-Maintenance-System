@@ -6,3 +6,7 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 machine_monitor.db
+# Test and coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
