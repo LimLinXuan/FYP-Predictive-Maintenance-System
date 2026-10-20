@@ -2690,7 +2690,7 @@ def api_my_work_orders_summary():
     overdue = conn.execute(
         "SELECT COUNT(*) c FROM work_orders WHERE assigned_to=? AND due_date < ? "
         "AND status NOT IN ('CLOSED','CANCELLED')",
-        (current_user.username, ().isoformat(timespec='seconds'))
+        (current_user.username, datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds'))
     ).fetchone()['c']
     return jsonify({
         "my_pending": pending,

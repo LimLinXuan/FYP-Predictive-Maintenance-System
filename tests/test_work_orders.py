@@ -317,3 +317,420 @@ def test_cancelling_nonexistent_work_order_returns_404(test_env):
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "Work order not found"
+
+def test_unauthenticated_user_cannot_update_work_order_status(test_env):
+    client, db_path = test_env
+
+    response = client.post(
+        "/api/work-orders/1/status",
+        json={"status": "CANCELLED"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "login" in response.headers["Location"]
+
+    rows = read_db(
+        db_path,
+        "SELECT status FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "OPEN"
+
+
+def test_inactive_user_cannot_update_work_order_status(test_env):
+    client, db_path = test_env
+    authenticate(client, 3)
+
+    response = client.post(
+        "/api/work-orders/1/status",
+        json={"status": "CANCELLED"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "login" in response.headers["Location"]
+
+    rows = read_db(
+        db_path,
+        "SELECT status FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "OPEN"
+
+
+def test_technician_cannot_accept_unassigned_work_order(test_env):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post("/api/work-orders/1/accept")
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Forbidden: not assigned to you"
+
+    rows = read_db(
+        db_path,
+        "SELECT status, assigned_to FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "OPEN"
+    assert rows[0]["assigned_to"] is None
+
+
+def test_technician_can_save_notes_while_working(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "IN_PROGRESS", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/notes",
+        json={"technician_notes": "  Bearing inspection completed  "},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["technician_notes"] == (
+        "Bearing inspection completed"
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT technician_notes FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["technician_notes"] == "Bearing inspection completed"
+
+
+def test_complete_work_order_requires_resolution_note(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "IN_PROGRESS", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/complete",
+        json={"resolution_note": "   "},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "resolution_note is required to complete a work order"
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT status, resolution_note FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "IN_PROGRESS"
+    assert rows[0]["resolution_note"] is None
+
+
+def test_technician_cannot_verify_work_order(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET status = ?
+            WHERE wo_id = ?
+            """,
+            ("PENDING_VERIFICATION", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/verify",
+        json={"decision": "approve"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == (
+        "Forbidden: only an administrator can verify"
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT status, verified_by FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "PENDING_VERIFICATION"
+    assert rows[0]["verified_by"] is None
+
+
+def test_technician_can_start_accepted_work_order(test_env, monkeypatch):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "ACCEPTED", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Isolate this test from asset-status integration logic.
+    monkeypatch.setattr(
+        app_module, "refresh_asset_status", lambda machine_id: None
+    )
+    authenticate(client, 2)
+
+    response = client.post("/api/work-orders/1/start")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "IN_PROGRESS"
+
+    rows = read_db(
+        db_path,
+        "SELECT status, started_at FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "IN_PROGRESS"
+    assert rows[0]["started_at"] is not None
+
+
+def test_technician_cannot_start_work_order_before_accepting(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "ASSIGNED", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 2)
+
+    response = client.post("/api/work-orders/1/start")
+
+    assert response.status_code == 400
+    assert "Cannot start from status ASSIGNED" in (
+        response.get_json()["error"]
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT status, started_at FROM work_orders WHERE wo_id = 1",
+    )
+    assert rows[0]["status"] == "ASSIGNED"
+    assert rows[0]["started_at"] is None
+
+
+def test_technician_can_complete_work_order_pending_verification(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "IN_PROGRESS", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/complete",
+        json={"resolution_note": "Bearing inspected and repaired"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "PENDING_VERIFICATION"
+
+    rows = read_db(
+        db_path,
+        """
+        SELECT status, resolution_note, completed_at
+        FROM work_orders
+        WHERE wo_id = 1
+        """,
+    )
+    assert rows[0]["status"] == "PENDING_VERIFICATION"
+    assert rows[0]["resolution_note"] == "Bearing inspected and repaired"
+    assert rows[0]["completed_at"] is not None
+
+
+def test_admin_can_reject_work_order_verification(test_env):
+    client, db_path = test_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET status = ?
+            WHERE wo_id = ?
+            """,
+            ("PENDING_VERIFICATION", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/work-orders/1/verify",
+        json={
+            "decision": "reject",
+            "verification_note": "Repair requires further inspection",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "IN_PROGRESS"
+
+    rows = read_db(
+        db_path,
+        """
+        SELECT status, verified_by, verification_note
+        FROM work_orders
+        WHERE wo_id = 1
+        """,
+    )
+    assert rows[0]["status"] == "IN_PROGRESS"
+    assert rows[0]["verified_by"] == "admin_test"
+    assert rows[0]["verification_note"] == (
+        "Repair requires further inspection"
+    )
+
+
+
+def test_admin_can_assign_open_work_order(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/work-orders/1/assign",
+        json={"technician": "tech_test"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["assigned_to"] == "tech_test"
+    assert response.get_json()["status"] == "ASSIGNED"
+
+    rows = read_db(
+        db_path,
+        "SELECT assigned_to, status FROM work_orders WHERE wo_id=?",
+        (1,),
+    )
+    assert rows[0]["assigned_to"] == "tech_test"
+    assert rows[0]["status"] == "ASSIGNED"
+
+
+def test_admin_cannot_assign_work_order_to_inactive_technician(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/work-orders/1/assign",
+        json={"technician": "inactive_test"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid technician"
+
+    rows = read_db(
+        db_path,
+        "SELECT assigned_to, status FROM work_orders WHERE wo_id=?",
+        (1,),
+    )
+    assert rows[0]["assigned_to"] is None
+    assert rows[0]["status"] == "OPEN"
+
+
+def test_technician_cannot_assign_work_order_to_another_user(test_env):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/assign",
+        json={"technician": "admin_test"},
+    )
+
+    assert response.status_code == 403
+
+    rows = read_db(
+        db_path,
+        "SELECT assigned_to, status FROM work_orders WHERE wo_id=?",
+        (1,),
+    )
+    assert rows[0]["assigned_to"] is None
+    assert rows[0]["status"] == "OPEN"
+
+
+def test_technician_cannot_claim_already_assigned_work_order(test_env):
+    client, db_path = test_env
+
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to=?, status=?
+            WHERE wo_id=?
+            """,
+            ("admin_test", "ASSIGNED", 1),
+        )
+
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/work-orders/1/assign",
+        json={"technician": "tech_test"},
+    )
+
+    assert response.status_code == 400
+    assert "unassigned open work order" in response.get_json()["error"]
+
+    rows = read_db(
+        db_path,
+        "SELECT assigned_to, status FROM work_orders WHERE wo_id=?",
+        (1,),
+    )
+    assert rows[0]["assigned_to"] == "admin_test"
+    assert rows[0]["status"] == "ASSIGNED"

@@ -34,7 +34,10 @@ def test_env(tmp_path, monkeypatch):
         CREATE TABLE decision_log (
             record_id INTEGER PRIMARY KEY,
             alert_status TEXT NOT NULL,
-            assigned_to TEXT
+            assigned_to TEXT,
+            resolved_by TEXT,
+            resolved_at TEXT,
+            resolution_note TEXT
         );
 
         CREATE TABLE audit_log (
@@ -252,3 +255,295 @@ def test_assignment_creates_audit_log_and_notification(test_env):
         and row["record_id"] == 101
         for row in notifications
     )
+
+def test_inactive_user_cannot_assign_alert(test_env):
+    client, db_path = test_env
+    authenticate(client, 4)
+
+    response = client.post(
+        "/api/assign/101",
+        json={},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "login" in response.headers["Location"]
+
+    row = read_db(
+        db_path,
+        "SELECT assigned_to, alert_status FROM decision_log WHERE record_id = 101",
+    )[0]
+    assert row["assigned_to"] is None
+    assert row["alert_status"] == "OPEN"
+
+
+
+def test_reassigning_alert_to_same_technician_updates_status_without_duplicate_assignment(
+    test_env,
+):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/assign/102",
+        json={"technician": "tech_test"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["assigned_to"] == "tech_test"
+    assert response.get_json()["alert_status"] == "ASSIGNED"
+
+    row = read_db(
+        db_path,
+        "SELECT assigned_to, alert_status FROM decision_log WHERE record_id = 102",
+    )[0]
+    assert row["assigned_to"] == "tech_test"
+    assert row["alert_status"] == "ASSIGNED"
+
+    audit_rows = read_db(
+        db_path,
+        """
+        SELECT action
+        FROM audit_log
+        WHERE target = 'Record #102'
+        """,
+    )
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["action"] == "UPDATE_ALERT"
+
+    notifications = read_db(
+        db_path,
+        "SELECT id FROM notifications WHERE record_id = 102",
+    )
+    assert notifications == []
+
+
+
+def test_unauthenticated_user_cannot_update_alert_status(test_env):
+    client, _ = test_env
+
+    response = client.post(
+        "/api/update_status/102",
+        json={"status": "RESOLVED", "note": "Completed"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "login" in response.headers["Location"]
+
+
+def test_technician_cannot_update_another_technicians_alert(test_env):
+    client, db_path = test_env
+    authenticate(client, 3)
+
+    response = client.post(
+        "/api/update_status/102",
+        json={"status": "RESOLVED", "note": "Not my alert"},
+    )
+
+    assert response.status_code == 403
+    row = read_db(
+        db_path,
+        "SELECT alert_status, resolved_by FROM decision_log WHERE record_id = 102",
+    )[0]
+    assert row["alert_status"] == "OPEN"
+    assert row["resolved_by"] is None
+
+
+def test_update_status_rejects_invalid_status(test_env):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/update_status/101",
+        json={"status": "INVALID"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_update_status_returns_404_for_missing_record(test_env):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/update_status/999",
+        json={"status": "RESOLVED"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_technician_can_resolve_own_alert_and_save_resolution_details(test_env):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/update_status/102",
+        json={"status": "RESOLVED", "note": "Inspection completed"},
+    )
+
+    assert response.status_code == 200
+    row = read_db(
+        db_path,
+        """
+        SELECT alert_status, resolved_by, resolved_at, resolution_note
+        FROM decision_log WHERE record_id = 102
+        """,
+    )[0]
+    assert row["alert_status"] == "RESOLVED"
+    assert row["resolved_by"] == "tech_test"
+    assert row["resolved_at"]
+    assert row["resolution_note"] == "Inspection completed"
+
+
+def test_false_positive_resolution_saves_status_and_note(test_env):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/update_status/102",
+        json={"status": "FALSE_POSITIVE", "note": "Sensor reading verified"},
+    )
+
+    assert response.status_code == 200
+    row = read_db(
+        db_path,
+        """
+        SELECT alert_status, resolved_by, resolved_at, resolution_note
+        FROM decision_log WHERE record_id = 102
+        """,
+    )[0]
+    assert row["alert_status"] == "FALSE_POSITIVE"
+    assert row["resolved_by"] == "tech_test"
+    assert row["resolved_at"]
+    assert row["resolution_note"] == "Sensor reading verified"
+
+
+def test_closed_alert_cannot_change_to_another_status(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/update_status/103",
+        json={"status": "OPEN"},
+    )
+
+    assert response.status_code == 400
+    row = read_db(
+        db_path,
+        "SELECT alert_status FROM decision_log WHERE record_id = 103",
+    )[0]
+    assert row["alert_status"] == "RESOLVED"
+
+
+def test_reopen_alert_forbidden_to_technician(test_env):
+    client, _ = test_env
+    authenticate(client, 2)
+
+    response = client.post(
+        "/api/reopen_alert/103",
+        json={"reason": "Recheck required"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_reopen_alert_requires_reason(test_env):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/reopen_alert/103",
+        json={"reason": "   "},
+    )
+
+    assert response.status_code == 400
+
+
+def test_reopen_alert_returns_404_for_missing_record(test_env):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/reopen_alert/999",
+        json={"reason": "Investigate missing record"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_reopen_alert_rejects_non_closed_alert(test_env):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    response = client.post(
+        "/api/reopen_alert/101",
+        json={"reason": "Try reopening an open alert"},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("record_id", "expected_status", "expected_assignee"),
+    [
+        (103, "OPEN", None),
+        (104, "OPEN", None),
+    ],
+)
+def test_admin_can_reopen_closed_alert_and_clear_resolution_details(
+    test_env, record_id, expected_status, expected_assignee
+):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    # Populate resolution fields to verify reopening clears them.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE decision_log
+            SET resolved_by = ?, resolved_at = ?, resolution_note = ?
+            WHERE record_id = ?
+            """,
+            ("tech_test", "2026-10-01T10:00:00", "Previously closed", record_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/reopen_alert/{record_id}",
+        json={"reason": "Further investigation required"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["alert_status"] == expected_status
+
+    row = read_db(
+        db_path,
+        """
+        SELECT alert_status, assigned_to, resolved_by, resolved_at, resolution_note
+        FROM decision_log WHERE record_id = ?
+        """,
+        (record_id,),
+    )[0]
+    assert row["alert_status"] == expected_status
+    assert row["assigned_to"] == expected_assignee
+    assert row["resolved_by"] is None
+    assert row["resolved_at"] is None
+    assert row["resolution_note"] is None
+
+    audit_rows = read_db(
+        db_path,
+        """
+        SELECT username, action, target, details
+        FROM audit_log
+        WHERE action = 'REOPEN_ALERT' AND target = ?
+        """,
+        (f"Record #{record_id}",),
+    )
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["username"] == "admin_test"
+    assert "Further investigation required" in audit_rows[0]["details"]
