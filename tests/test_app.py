@@ -33,3 +33,21 @@ def test_stream_page_authenticated(client):
     response = client.get("/stream")
 
     assert response.status_code == 200
+
+def test_dashboard_requires_login(client):
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_dashboard_authenticated_user(client):
+    # Log in using the existing test client.
+    with client.session_transaction() as session:
+        session["_user_id"] = "1"
+        session["_fresh"] = True
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"<html" in response.data.lower()
