@@ -141,7 +141,7 @@ async function loadHealth() {
     const h = await fetch('/api/health').then(r => r.json())
 
     const b = bannerStyle[h.overall_status] || bannerStyle.down
-    const checkedAt = new Date(
+    const checkedAt = parseServerTime(
     h.checked_at.endsWith('Z') ? h.checked_at : `${h.checked_at}Z`
 );
     const banner = document.getElementById('overallBanner')

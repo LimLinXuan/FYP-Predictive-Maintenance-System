@@ -20,6 +20,7 @@ from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
     login_required, current_user
 )
+from urllib.parse import urlparse
 
 APP_START_TIME = datetime.now(timezone.utc).replace(tzinfo=None)
 MODEL_VERSION = "Random Forest + Logistic Regression"
@@ -1113,6 +1114,14 @@ def role_required(*allowed_roles):
 # ══════════════════════════════════════════
 # AUTH ROUTES
 # ══════════════════════════════════════════
+from urllib.parse import urlparse
+
+def _is_safe_next(target):
+    if not target or '\\' in target:
+        return False
+    parts = urlparse(target)
+    return (not parts.scheme and not parts.netloc
+            and target.startswith('/') and not target.startswith('//'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1146,7 +1155,7 @@ def login():
 
         flash(f'Welcome back, {user.username}!', 'success')
         next_page = request.args.get('next')
-        return redirect(next_page or url_for('dashboard'))
+        return redirect(next_page if _is_safe_next(next_page) else url_for('dashboard'))
 
     return render_template('login.html')
 

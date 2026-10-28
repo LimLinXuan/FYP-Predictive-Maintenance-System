@@ -174,6 +174,18 @@
   {% endwith %}
 
   <script>
+    function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+  ));
+}
+
+    function parseServerTime(value) {
+  if (!value) return null
+  const s = String(value)
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z')
+}
+
     function showToast(message, level = 'info', duration = 5000) {
       const styles = {
         critical: 'bg-red-900 border border-red-700 text-red-200',
@@ -270,6 +282,8 @@
         });
       });
     }
+
+
 
     function loadInitial() {
       fetch('/api/notifications')

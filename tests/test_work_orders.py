@@ -1342,3 +1342,151 @@ def test_approve_work_order_without_record_id(test_env, monkeypatch):
     assert len(audit_rows) == 1
     assert audit_rows[0]["target"] == "WO #1"
     assert audit_rows[0]["details"] == "approve -> CLOSED"
+
+def test_accept_nonexistent_work_order_returns_404(test_env):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post("/api/work-orders/9999/accept")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "Work order not found"
+
+def test_technician_cannot_accept_work_order_assigned_to_another_user(
+    test_env,
+):
+    client, db_path = test_env
+    authenticate(client, 2)
+
+    response = client.post("/api/work-orders/1/accept")
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == (
+        "Forbidden: not assigned to you"
+    )
+
+def test_technician_cannot_accept_work_order_with_invalid_status(
+    test_env,
+):
+    client, db_path = test_env
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "IN_PROGRESS", 1),
+        )
+
+    authenticate(client, 2)
+    response = client.post("/api/work-orders/1/accept")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "Cannot accept from status IN_PROGRESS"
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT status, accepted_at FROM work_orders WHERE wo_id = ?",
+        (1,),
+    )
+    assert rows[0]["status"] == "IN_PROGRESS"
+    assert rows[0]["accepted_at"] is None
+
+
+def test_technician_can_accept_assigned_work_order(
+    test_env, monkeypatch
+):
+    client, db_path = test_env
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "ASSIGNED", 1),
+        )
+
+    refreshed_machines = []
+    monkeypatch.setattr(
+        app_module,
+        "refresh_asset_status",
+        lambda machine_id: refreshed_machines.append(machine_id),
+    )
+
+    authenticate(client, 2)
+    response = client.post("/api/work-orders/1/accept")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "message": "Accepted",
+        "status": "ACCEPTED",
+    }
+
+    rows = read_db(
+        db_path,
+        """
+        SELECT status, accepted_at, assigned_to, machine_id
+        FROM work_orders
+        WHERE wo_id = ?
+        """,
+        (1,),
+    )
+
+    assert rows[0]["status"] == "ACCEPTED"
+    assert rows[0]["accepted_at"] is not None
+    assert rows[0]["assigned_to"] == "tech_test"
+    assert refreshed_machines == [rows[0]["machine_id"]]
+
+    audit_rows = read_db(
+        db_path,
+        """
+        SELECT action, target
+        FROM audit_log
+        WHERE username = ?
+        """,
+        ("tech_test",),
+    )
+
+    assert any(
+        row["action"] == "ACCEPT_WORK_ORDER"
+        and row["target"] == "WO #1"
+        for row in audit_rows
+    )
+
+
+def test_technician_cannot_accept_work_order_with_open_status(
+    test_env,
+):
+    client, db_path = test_env
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE work_orders
+            SET assigned_to = ?, status = ?
+            WHERE wo_id = ?
+            """,
+            ("tech_test", "OPEN", 1),
+        )
+
+    authenticate(client, 2)
+    response = client.post("/api/work-orders/1/accept")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "Cannot accept from status OPEN"
+    )
+
+    rows = read_db(
+        db_path,
+        "SELECT status, accepted_at FROM work_orders WHERE wo_id = ?",
+        (1,),
+    )
+    assert rows[0]["status"] == "OPEN"
+    assert rows[0]["accepted_at"] is None

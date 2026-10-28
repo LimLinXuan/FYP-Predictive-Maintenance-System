@@ -230,3 +230,35 @@ def test_export_audit_log_technician_is_forbidden(audit_env):
     response = client.get("/admin/audit-log/export")
 
     assert response.status_code == 403
+
+# -------------------- SQL INJECTION --------------------
+
+import pytest
+
+
+@pytest.mark.parametrize("payload", [
+    "' OR 1=1 --",
+    "x'; DROP TABLE audit_log; --",
+])
+def test_audit_log_search_rejects_injection(audit_env, payload):
+    client, db_path = audit_env
+    authenticate(client, 1)
+
+    response = client.get(
+        "/admin/audit-log",
+        query_string={"search": payload},
+    )
+
+    assert response.status_code == 200
+
+    # Verify that the audit_log table still exists.
+    tables = read_db(
+        db_path,
+        "SELECT name FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'audit_log'",
+    )
+    assert len(tables) == 1
+
+    # Verify that the page remains accessible.
+    again = client.get("/admin/audit-log")
+    assert again.status_code == 200

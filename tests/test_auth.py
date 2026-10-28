@@ -64,6 +64,43 @@ def auth_env(tmp_path, monkeypatch):
     with app_module.app.test_client() as client:
         yield client, test_db
 
+@pytest.mark.parametrize("payload", [
+    "admin' OR '1'='1' --",
+    "' OR 1=1 --",
+    "admin'--",
+    "x'; DROP TABLE users; --",
+])
+def test_login_rejects_sql_injection(auth_env, payload):
+    client, db = auth_env
+
+    response = client.post(
+        "/login",
+        data={
+            "username": payload,
+            "password": "anything",
+        },
+    )
+
+    # The injection attempt must not authenticate the user.
+    assert response.status_code == 401
+
+    # The users table must still exist.
+    users = read_db(
+        db,
+        "SELECT name FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'users'",
+    )
+    assert len(users) == 1
+
+    # The application should still handle a subsequent login.
+    again = client.post(
+        "/login",
+        data={
+            "username": payload,
+            "password": "anything",
+        },
+    )
+    assert again.status_code == 401
 
 def authenticate(client, user_id):
     with client.session_transaction() as session:
@@ -130,6 +167,27 @@ def test_login_success_honours_next_parameter(auth_env):
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/admin/users")
 
+# -------------------- OPEN REDIRECT --------------------
+
+@pytest.mark.parametrize("target", [
+    "https://evil.example",
+    "//evil.example",
+    "/\\evil.example",
+])
+def test_login_rejects_external_next_parameter(auth_env, target):
+    client, _ = auth_env
+
+    response = client.post(
+        f"/login?next={target}",
+        data={
+            "username": "tech_test",
+            "password": "TestPass123!",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert "evil.example" not in response.headers.get("Location", "")
 
 def test_login_wrong_password_returns_401(auth_env):
     client, db = auth_env
