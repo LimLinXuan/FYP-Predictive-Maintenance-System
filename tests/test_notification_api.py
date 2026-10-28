@@ -30,7 +30,7 @@ def notification_env(tmp_path, monkeypatch):
                 title TEXT,
                 message TEXT,
                 level TEXT,
-                notif_type TEXT,
+                type TEXT,
                 created_at TEXT,
                 read_at TEXT
             )
@@ -39,8 +39,7 @@ def notification_env(tmp_path, monkeypatch):
         conn.executemany(
             """
             INSERT INTO notifications
-                (id, username, title, message, level, notif_type,
-                 created_at, read_at)
+                (id, username, title, message, level, type, created_at, read_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
@@ -342,3 +341,96 @@ def test_notifications_stream_keepalive_on_empty_queue(
         response.close()
 
     assert app_module._notification_subscribers["test_user"] == []
+
+
+# --------------------------------------------------
+# Get notification list
+# --------------------------------------------------
+
+def test_api_notifications_regular_user_sees_only_own_notifications(
+    notification_env,
+):
+    client, _ = notification_env
+
+    response = client.get("/api/notifications")
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert "notifications" in data
+    assert data["unread_count"] == 1
+
+    notifications = data["notifications"]
+    assert [item["id"] for item in notifications] == [4, 1]
+    assert all(
+        item["username"] == "test_user"
+        for item in notifications
+    )
+
+
+def test_api_notifications_admin_sees_own_and_public_notifications(
+    notification_env, monkeypatch
+):
+    client, _ = notification_env
+
+    monkeypatch.setattr(
+        app_module.login_manager,
+        "_user_callback",
+        lambda user_id: (
+            MockUser(is_admin=True) if user_id == "1" else None
+        ),
+    )
+
+    response = client.get("/api/notifications")
+
+    assert response.status_code == 200
+
+    data = response.get_json()
+
+    assert data["unread_count"] == 2
+
+    notifications = data["notifications"]
+    assert [item["id"] for item in notifications] == [4, 2, 1]
+
+    usernames = [item["username"] for item in notifications]
+    assert usernames == ["test_user", None, "test_user"]
+
+
+def test_api_notifications_returns_empty_list_when_no_notifications(
+    notification_env, monkeypatch
+):
+    client, db_path = notification_env
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM notifications")
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/notifications")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "notifications": [],
+        "unread_count": 0,
+    }
+
+
+def test_api_notifications_returns_500_when_database_fails(
+    notification_env, monkeypatch
+):
+    client, _ = notification_env
+
+    def fail_get_db():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(app_module, "get_db", fail_get_db)
+
+    response = client.get("/api/notifications")
+
+    assert response.status_code == 500
+    assert response.get_json() == {
+        "error": "database unavailable",
+    }

@@ -180,12 +180,12 @@ async function load() {
     field('Machine', data.machine_id ? `<span class="font-mono">${data.machine_id}</span>` : '—'),
     field('Assignee', data.assigned_to || 'Unassigned'),
     field('Created by', data.created_by),
-    field('Due Date', data.due_date ? new Date(data.due_date).toLocaleString() : '—'),
-    field('Created At', new Date(data.created_at).toLocaleString()),
-    field('Accepted At', data.accepted_at ? new Date(data.accepted_at).toLocaleString() : '—'),
-    field('Started At', data.started_at ? new Date(data.started_at).toLocaleString() : '—'),
-    field('Completed At', data.completed_at ? new Date(data.completed_at).toLocaleString() : '—'),
-    field('Verified At', data.verified_at ? new Date(data.verified_at).toLocaleString() : '—'),
+    field('Due Date', data.due_date ? parseServerTime(data.due_date).toLocaleString() : '—'),
+    field('Created At', parseServerTime(data.created_at).toLocaleString()),
+    field('Accepted At', data.accepted_at ? parseServerTime(data.accepted_at).toLocaleString() : '—'),
+    field('Started At', data.started_at ? parseServerTime(data.started_at).toLocaleString() : '—'),
+    field('Completed At', data.completed_at ? parseServerTime(data.completed_at).toLocaleString() : '—'),
+    field('Verified At', data.verified_at ? parseServerTime(data.verified_at).toLocaleString() : '—'),
   ].join('')
 
   document.getElementById('descText').textContent = data.description || '—'
@@ -259,7 +259,7 @@ function renderVerification() {
     card.classList.remove('hidden')
     readOnly.classList.remove('hidden')
     document.getElementById('verificationMeta').textContent =
-      `${currentWO.status === 'CLOSED' ? 'Approved' : 'Reviewed'} by ${currentWO.verified_by} on ${new Date(currentWO.verified_at).toLocaleString()}`
+      `${currentWO.status === 'CLOSED' ? 'Approved' : 'Reviewed'} by ${currentWO.verified_by} on ${parseServerTime(currentWO.verified_at).toLocaleString()}`
     document.getElementById('verificationText').textContent = currentWO.verification_note || '(no note)'
   }
 }

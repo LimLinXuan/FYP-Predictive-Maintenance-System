@@ -146,7 +146,7 @@ function filterOwner(owner) {
 
 function fmtDue(dateStr) {
   if (!dateStr) return '—'
-  const d = new Date(dateStr)
+  const d = parseServerTime(dateStr)
   const now = new Date()
   const overdue = d < now
   return `<span class="${overdue ? 'text-red-400 font-semibold' : 'text-gray-300'}">${d.toLocaleString()}</span>`
@@ -168,11 +168,11 @@ function renderTable(data) {
       <td class="py-3 pr-4 font-mono">
         <a href="/work-orders/${row.wo_id}" class="text-blue-400 hover:text-blue-300 hover:underline">#${row.wo_id}</a>
       </td>
-      <td class="py-3 pr-4">${row.title}</td>
-      <td class="py-3 pr-4 font-mono text-xs text-gray-400">${row.machine_id || '—'}</td>
+            <td class="py-3 pr-4">${escapeHtml(row.title)}</td>
+      <td class="py-3 pr-4 font-mono text-xs text-gray-400">${escapeHtml(row.machine_id) || '—'}</td>
       <td class="py-3 pr-4 font-bold ${pc}">${row.priority}</td>
       <td class="py-3 pr-4 font-semibold text-xs ${sc}">${row.status.replace(/_/g,' ')}</td>
-      <td class="py-3 pr-4 text-xs">${row.assigned_to || '<span class="text-gray-600">Unassigned</span>'}</td>
+            <td class="py-3 pr-4 text-xs">${row.assigned_to ? escapeHtml(row.assigned_to) : '<span class="text-gray-600">Unassigned</span>'}</td>
       <td class="py-3 pr-4 text-xs">${fmtDue(row.due_date)}</td>
       <td class="py-3 text-xs">${row.record_id ? `<span class="text-purple-300">AI Alert #${row.record_id}</span>` : '<span class="text-gray-500">Manual</span>'}</td>
     `

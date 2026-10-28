@@ -547,3 +547,292 @@ def test_admin_can_reopen_closed_alert_and_clear_resolution_details(
     assert len(audit_rows) == 1
     assert audit_rows[0]["username"] == "admin_test"
     assert "Further investigation required" in audit_rows[0]["details"]
+
+
+def test_api_alerts_returns_risk_records_sorted_by_score(test_env, monkeypatch):
+    client, db_path = test_env
+
+    # Add the columns selected by /api/alerts to the temporary test database.
+    conn = sqlite3.connect(db_path)
+    try:
+        for column, column_type in [
+            ("pred_prob", "REAL"),
+            ("risk_score", "REAL"),
+            ("risk_level", "TEXT"),
+            ("action", "TEXT"),
+            ("reasons", "TEXT"),
+            ("shap_explanation", "TEXT"),
+            ("timestamp", "TEXT"),
+        ]:
+            conn.execute(
+                f"ALTER TABLE decision_log ADD COLUMN {column} {column_type}"
+            )
+
+        conn.executemany(
+            """
+            UPDATE decision_log
+            SET pred_prob = ?, risk_score = ?, risk_level = ?,
+                action = ?, reasons = ?, shap_explanation = ?, timestamp = ?
+            WHERE record_id = ?
+            """,
+            [
+                (0.8, 80, "High", "Inspect", "High risk", "{}", "2026-01-01", 101),
+                (0.9, 95, "Critical", "Stop", "Critical risk", "{}", "2026-01-02", 102),
+                (0.4, 40, "Medium", "Monitor", "Medium risk", "{}", "2026-01-03", 103),
+                (0.2, 20, "Low", "Observe", "Low risk", "{}", "2026-01-04", 104),
+            ],
+        )
+
+        # This record must be excluded by the API's risk-level filter.
+        conn.execute(
+            """
+            INSERT INTO decision_log
+                (record_id, alert_status, pred_prob, risk_score, risk_level,
+                 action, reasons, shap_explanation, timestamp)
+            VALUES (105, 'OPEN', 0.1, 10, 'Unknown',
+                    'Ignore', 'Unknown level', '{}', '2026-01-05')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Keep the test independent of the project's real machine/asset data.
+    monkeypatch.setattr(
+        app_module, "machine_id_for_record",
+        lambda record_id: f"M{record_id}"
+    )
+    monkeypatch.setattr(
+        app_module, "asset_id_for_machine",
+        lambda machine_id: f"A{machine_id}"
+    )
+
+    authenticate(client, 1)
+    response = client.get("/api/alerts")
+
+    assert response.status_code == 200
+    data = response.get_json()
+
+    assert isinstance(data, list)
+    assert [item["record_id"] for item in data] == [102, 101, 103, 104]
+    assert [item["risk_score"] for item in data] == [95, 80, 40, 20]
+
+    assert all(item["risk_level"] in {"Low", "Medium", "High", "Critical"}
+               for item in data)
+
+    assert data[0]["machine_id"] == "M102"
+    assert data[0]["asset_id"] == "AM102"
+
+
+def test_api_alerts_returns_empty_list_when_no_risk_records(test_env):
+    client, db_path = test_env
+
+    authenticate(client, 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        existing_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(decision_log)"
+            ).fetchall()
+        }
+
+        required_columns = {
+            "pred_prob": "REAL",
+            "risk_score": "REAL",
+            "risk_level": "TEXT",
+            "action": "TEXT",
+            "reasons": "TEXT",
+            "shap_explanation": "TEXT",
+            "timestamp": "TEXT",
+        }
+
+        for column, column_type in required_columns.items():
+            if column not in existing_columns:
+                conn.execute(
+                    f"ALTER TABLE decision_log "
+                    f"ADD COLUMN {column} {column_type}"
+                )
+
+        conn.execute("DELETE FROM decision_log")
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/alerts")
+
+    assert response.status_code == 200
+    assert response.get_json() == []
+
+
+def test_api_alerts_returns_500_when_database_query_fails(test_env, monkeypatch):
+    client, _ = test_env
+
+    def raise_database_error(*args, **kwargs):
+        raise RuntimeError("simulated database failure")
+
+    monkeypatch.setattr(app_module.pd, "read_sql", raise_database_error)
+
+    authenticate(client, 1)
+    response = client.get("/api/alerts")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"] == "simulated database failure"
+
+def test_api_records_returns_records_sorted_by_risk_score(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for column, column_type in [
+            ("pred_prob", "REAL"),
+            ("risk_score", "REAL"),
+            ("risk_level", "TEXT"),
+            ("action", "TEXT"),
+            ("reasons", "TEXT"),
+            ("shap_explanation", "TEXT"),
+            ("timestamp", "TEXT"),
+        ]:
+            conn.execute(
+                f"ALTER TABLE decision_log ADD COLUMN {column} {column_type}"
+            )
+
+        conn.executemany(
+            """
+            UPDATE decision_log
+            SET risk_score = ?, risk_level = ?
+            WHERE record_id = ?
+            """,
+            [
+                (80, "High", 101),
+                (95, "Critical", 102),
+                (40, "Medium", 103),
+                (20, "Low", 104),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/records")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [item["record_id"] for item in data] == [102, 101, 103, 104]
+    assert [item["risk_score"] for item in data] == [95, 80, 40, 20]
+
+
+def test_api_records_filters_by_risk_level(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for column, column_type in [
+            ("pred_prob", "REAL"),
+            ("risk_score", "REAL"),
+            ("risk_level", "TEXT"),
+            ("action", "TEXT"),
+            ("reasons", "TEXT"),
+            ("shap_explanation", "TEXT"),
+            ("timestamp", "TEXT"),
+        ]:
+            conn.execute(
+                f"ALTER TABLE decision_log ADD COLUMN {column} {column_type}"
+            )
+
+        conn.executemany(
+            """
+            UPDATE decision_log
+            SET risk_score = ?, risk_level = ?
+            WHERE record_id = ?
+            """,
+            [
+                (80, "High", 101),
+                (95, "Critical", 102),
+                (40, "High", 103),
+                (20, "Low", 104),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/records?level=High")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [item["record_id"] for item in data] == [101, 103]
+    assert all(item["risk_level"] == "High" for item in data)
+
+
+def test_api_records_respects_limit_parameter(test_env):
+    client, db_path = test_env
+    authenticate(client, 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for column, column_type in [
+            ("pred_prob", "REAL"),
+            ("risk_score", "REAL"),
+            ("risk_level", "TEXT"),
+            ("action", "TEXT"),
+            ("reasons", "TEXT"),
+            ("shap_explanation", "TEXT"),
+            ("timestamp", "TEXT"),
+        ]:
+            conn.execute(
+                f"ALTER TABLE decision_log ADD COLUMN {column} {column_type}"
+            )
+
+        conn.executemany(
+            """
+            UPDATE decision_log
+            SET risk_score = ?, risk_level = ?
+            WHERE record_id = ?
+            """,
+            [
+                (80, "High", 101),
+                (95, "Critical", 102),
+                (40, "Medium", 103),
+                (20, "Low", 104),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/records?limit=2")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data) == 2
+    assert [item["record_id"] for item in data] == [102, 101]
+
+
+def test_api_records_returns_500_when_database_query_fails(
+    test_env, monkeypatch
+):
+    client, _ = test_env
+    authenticate(client, 1)
+
+    def raise_database_error(*args, **kwargs):
+        raise RuntimeError("simulated database failure")
+
+    monkeypatch.setattr(app_module.pd, "read_sql", raise_database_error)
+
+    response = client.get("/api/records")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"] == "simulated database failure"
+
+
+def test_unauthenticated_user_cannot_access_api_records(test_env):
+    client, _ = test_env
+
+    response = client.get("/api/records", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert "login" in response.headers["Location"]
