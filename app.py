@@ -20,6 +20,7 @@ from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
     login_required, current_user
 )
+from flask_wtf.csrf import CSRFProtect, CSRFError   # <-- CSRF (DEF-06 / LIM-01)
 from urllib.parse import urlparse
 
 APP_START_TIME = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -156,6 +157,30 @@ Swagger(app)
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 
+# ══════════════════════════════════════════
+# SESSION COOKIE HARDENING + CSRF PROTECTION
+# ══════════════════════════════════════════
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# Secure flag only works over HTTPS; enable with:  set SESSION_COOKIE_SECURE=1
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+# Token stays valid for the whole session (avoids "token expired" on long dashboards)
+app.config['WTF_CSRF_TIME_LIMIT'] = None
+
+# Protects every POST/PUT/PATCH/DELETE. GET routes (incl. the SSE stream) are unaffected.
+# Tests can disable it with: app.config['WTF_CSRF_ENABLED'] = False
+csrf = CSRFProtect(app)
+
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "CSRF validation failed", "detail": e.description}), 400
+    return Response(
+        "400 Bad Request: CSRF validation failed. Reload the page and try again.",
+        status=400, mimetype='text/plain'
+    )
+
 bcrypt = Bcrypt(app)
 
 # ══════════════════════════════════════════
@@ -188,6 +213,7 @@ def get_raw_conn():
     _configure_db_once()
     conn = sqlite3.connect(DB, timeout=5)
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys = ON")   # enforce FKs (DEF-05 / LIM-02)
     return conn
 
 
@@ -197,6 +223,7 @@ def get_db():
         g.db = sqlite3.connect(DB, timeout=5)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA busy_timeout=5000")
+        g.db.execute("PRAGMA foreign_keys = ON")   # enforce FKs (DEF-05 / LIM-02)
     return g.db
 
 _notification_subscribers = {}
@@ -861,6 +888,34 @@ def init_downtime_events_table():
     """)
     conn.commit()
     conn.close()
+
+def init_unique_record_index():
+    """decision_log is created by the training notebook. work_orders.record_id
+    references it, and SQLite requires the parent key to be PRIMARY KEY/UNIQUE,
+    otherwise inserts fail with 'foreign key mismatch' once FKs are enforced."""
+    conn = get_raw_conn()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decision_log'"
+        ).fetchone()
+        if not exists:
+            return
+        dupes = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT record_id FROM decision_log "
+            "GROUP BY record_id HAVING COUNT(*) > 1)"
+        ).fetchone()[0]
+        if dupes:
+            print(f"WARNING: decision_log has {dupes} duplicate record_id values; "
+                  "unique index NOT created. Clean the data first.")
+            return
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_log_record_id "
+            "ON decision_log(record_id)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def init_indexes():
     conn = get_raw_conn()
@@ -2065,6 +2120,8 @@ def api_delete_pm_schedule(pm_id):
     pm = conn.execute("SELECT pm_name FROM pm_schedules WHERE pm_id=?", (pm_id,)).fetchone()
     if pm is None:
         return jsonify({"error": "PM schedule not found"}), 404
+    # keep maintenance history, just detach it from the schedule being deleted
+    conn.execute("UPDATE maintenance_records SET source_pm_id=NULL WHERE source_pm_id=?", (pm_id,))
     conn.execute("DELETE FROM pm_schedules WHERE pm_id=?", (pm_id,))
     conn.commit()
     log_action(current_user.username, 'DELETE_PM_SCHEDULE', f'PM #{pm_id}', pm['pm_name'])
@@ -3512,6 +3569,7 @@ if __name__ == '__main__':
     init_health_log_table()
     init_assignment_column()
     init_resolution_columns()
+    init_unique_record_index()
     init_work_orders_table()
     init_workflow_columns()
     init_pm_schedules_table()
@@ -3523,4 +3581,4 @@ if __name__ == '__main__':
     seed_assets_and_lines()
     seed_demo_maintenance_data()
     init_indexes()
-    app.run(debug=False, threaded=True)
+    app.run(debug=False, threaded=True)w

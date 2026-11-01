@@ -1,6 +1,7 @@
 import pytest
 from app import app
 
+app.config['WTF_CSRF_ENABLED'] = False
 
 @pytest.fixture
 def client():
@@ -9,11 +10,32 @@ def client():
     with app.test_client() as client:
         yield client
 
+import pytest
+from app import app
+
+@pytest.fixture(autouse=True)
+def disable_csrf_for_tests():
+    app.config['WTF_CSRF_ENABLED'] = False
+    yield
 
 def test_home_page(client):
     response = client.get("/")
 
     assert response.status_code in (200, 302)
+def test_csrf_blocks_post_without_token(client):
+    with client.session_transaction() as session:
+        session["_user_id"] = "1"      # 确认 id 1 是 admin
+        session["_fresh"] = True
+
+    app.config['WTF_CSRF_ENABLED'] = True
+    try:
+        resp = client.post(
+            '/admin/users/create',
+            data={'username': 'csrf_test_user', 'role': 'technician', 'email': 'x@example.com'},
+        )
+        assert resp.status_code == 400
+    finally:
+        app.config['WTF_CSRF_ENABLED'] = False
 
 
 def test_stream_page_requires_login(client):

@@ -25,6 +25,7 @@
   <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6 fade-in-up" style="animation-delay:0.08s">
     <h2 class="text-sm font-semibold text-gray-300 mb-4">Account details</h2>
     <form id="accountForm" method="POST" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div>
         <label class="text-xs text-gray-500 flex items-center gap-1">
           Username
@@ -76,6 +77,7 @@
     <p class="text-[11px] text-gray-500 mb-4">Sensitive action &mdash; this immediately invalidates the current password.</p>
 
     <form id="passwordForm" method="POST" action="{{ url_for('reset_password', user_id=user.id) }}" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div>
         <label class="text-xs text-gray-500">New password</label>
         <div class="relative mt-1">

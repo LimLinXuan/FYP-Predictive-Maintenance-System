@@ -3,6 +3,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script>
+    // Auto-attach the CSRF token to every same-origin state-changing fetch()
+    (function () {
+      const _fetch = window.fetch;
+      window.fetch = function (url, opts) {
+        opts = opts || {};
+        const method = (opts.method || 'GET').toUpperCase();
+        const target = (typeof url === 'string') ? url : (url && url.url) || '';
+        const sameOrigin = target.startsWith('/') || target.startsWith(location.origin);
+        if (sameOrigin && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+          const meta = document.querySelector('meta[name="csrf-token"]');
+          const token = meta ? meta.content : '';
+          if (opts.headers instanceof Headers) {
+            opts.headers.set('X-CSRFToken', token);
+          } else {
+            opts.headers = Object.assign({ 'X-CSRFToken': token }, opts.headers || {});
+          }
+        }
+        return _fetch.call(window, url, opts);
+      };
+    })();
+  </script>
   <title>Predictive Maintenance System</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
