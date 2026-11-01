@@ -3581,4 +3581,4 @@ if __name__ == '__main__':
     seed_assets_and_lines()
     seed_demo_maintenance_data()
     init_indexes()
-    app.run(debug=False, threaded=True)w
+    app.run(debug=False, threaded=True)
